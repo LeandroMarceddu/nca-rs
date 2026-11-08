@@ -182,9 +182,11 @@ impl ViewerHandle {
         }
         match last.kind {
             DragKind::Pan2D => viewer.camera.pan(delta),
+            // Vertical orbit is intentionally inverted: dragging down raises
+            // the eye, dragging up lowers it. Horizontal yaw follows the drag.
             DragKind::Orbit3D => viewer
                 .camera3d
-                .orbit(-delta.x * ORBIT_RAD_PER_PX, -delta.y * ORBIT_RAD_PER_PX),
+                .orbit(-delta.x * ORBIT_RAD_PER_PX, delta.y * ORBIT_RAD_PER_PX),
             DragKind::Pan3D => viewer.camera3d.pan(delta),
         }
         true
@@ -2817,6 +2819,54 @@ mod tests {
         };
         assert_eq!(two_d.scale(), back.scale());
         assert!(handle.set_mode(ViewerMode::Top2D));
+    }
+
+    #[test]
+    fn vertical_orbit_drag_is_inverted() {
+        let handle = ViewerHandle::new();
+        assert!(handle.set_mode(ViewerMode::ThreeD));
+        let (start_pitch, start_eye_z) = {
+            let viewer = handle.inner.borrow();
+            (viewer.camera3d.pitch(), viewer.camera3d.eye().z)
+        };
+
+        handle.begin_drag(point(px(100.0), px(100.0)));
+        assert!(handle.drag_to(point(px(100.0), px(130.0))));
+        handle.end_drag();
+        let (after_down_pitch, after_down_eye_z) = {
+            let viewer = handle.inner.borrow();
+            (viewer.camera3d.pitch(), viewer.camera3d.eye().z)
+        };
+        assert!(
+            after_down_pitch > start_pitch,
+            "dragging down must raise the pitch ({start_pitch} -> {after_down_pitch})"
+        );
+        assert!(
+            after_down_eye_z > start_eye_z,
+            "dragging down must raise the eye ({start_eye_z} -> {after_down_eye_z})"
+        );
+
+        handle.begin_drag(point(px(100.0), px(130.0)));
+        assert!(handle.drag_to(point(px(100.0), px(100.0))));
+        handle.end_drag();
+        let (after_up_pitch, after_up_eye_z) = {
+            let viewer = handle.inner.borrow();
+            (viewer.camera3d.pitch(), viewer.camera3d.eye().z)
+        };
+        assert!(
+            after_up_pitch < after_down_pitch,
+            "dragging up must lower the pitch ({after_down_pitch} -> {after_up_pitch})"
+        );
+        assert!(
+            (after_up_pitch - start_pitch).abs() < 1.0e-5,
+            "an equal upward drag must return to the starting pitch \
+             ({start_pitch} -> {after_up_pitch})"
+        );
+        assert!(
+            (after_up_eye_z - start_eye_z).abs() < 1.0e-4,
+            "an equal upward drag must return to the starting eye height \
+             ({start_eye_z} -> {after_up_eye_z})"
+        );
     }
 
     #[test]

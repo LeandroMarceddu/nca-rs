@@ -2,7 +2,7 @@
 
 use std::cell::OnceCell;
 
-use nc_core::{MachineConfig, MaterialPreset, ToolField, ToolTable};
+use nc_core::{Dialect, MachineConfig, MaterialPreset, ToolField, ToolTable};
 use nc_gcode::{MoveKind, Program};
 use nc_stock::{Heightmap, StockModel};
 
@@ -153,6 +153,8 @@ pub struct AnalysisModel<'a> {
     pub engagement: OnceCell<EngagementData>,
     /// `true` when the dialect was not configured and `Generic` was assumed.
     pub dialect_assumed: bool,
+    /// Effective parser dialect used to build the program.
+    pub dialect: Dialect,
 }
 
 impl<'a> AnalysisModel<'a> {
@@ -175,6 +177,7 @@ impl<'a> AnalysisModel<'a> {
             tolerances,
             engagement: OnceCell::new(),
             dialect_assumed: false,
+            dialect: Dialect::Generic,
         }
     }
 
@@ -182,6 +185,13 @@ impl<'a> AnalysisModel<'a> {
     #[must_use]
     pub fn with_dialect_assumed(mut self, assumed: bool) -> Self {
         self.dialect_assumed = assumed;
+        self
+    }
+
+    /// Sets the effective parser dialect for dialect-specific rules.
+    #[must_use]
+    pub fn with_dialect(mut self, dialect: Dialect) -> Self {
+        self.dialect = dialect;
         self
     }
 }

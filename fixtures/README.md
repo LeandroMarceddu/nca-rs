@@ -28,9 +28,11 @@ All 13 synthetic fixtures carry an `expected.json` reviewed on 2026-11-08
 against ruleset 1.0.0, which contains 45 rules. `nc-fixtures/tests/golden.rs`
 requires exactly this set of names: a missing folder, a missing required file,
 a missing synthetic golden, or an unexpected synthetic folder fails the suite.
-`fixtures/real/box54-lid-50cm` is the only named exemption from the golden
-requirement; it is locked by `crates/nc-fixtures/tests/real_file.rs` for
-determinism, caps, and performance instead.
+`fixtures/real/box54-lid-50cm` and `fixtures/real/makera-latchbase` are the
+named exemptions from the golden requirement. They are locked by
+`crates/nc-fixtures/tests/real_file.rs` for determinism and parse/analysis
+properties instead. `makera-latchbase` is the Makera Z1 post that proves the
+`makera` dialect (`M400`, `M851`, `M852`, clearance `G28`) loads cleanly.
 
 The committed corpus is:
 

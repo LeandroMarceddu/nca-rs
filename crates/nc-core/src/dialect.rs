@@ -26,16 +26,22 @@ pub enum Dialect {
     Mach3,
     /// Fanuc-style controls.
     Fanuc,
+    /// Makera Z1/Carvera, whose firmware is Smoothieware-derived.
+    ///
+    /// Adds the Makera auxiliary-output codes and treats `G28`/`G30` as a
+    /// controller-defined clearance move rather than a stored home position.
+    Makera,
 }
 
 impl Dialect {
     /// Every dialect in display order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Generic,
         Self::Grbl,
         Self::LinuxCnc,
         Self::Mach3,
         Self::Fanuc,
+        Self::Makera,
     ];
 
     /// Stable configuration name.
@@ -47,6 +53,7 @@ impl Dialect {
             Self::LinuxCnc => "linuxcnc",
             Self::Mach3 => "mach3",
             Self::Fanuc => "fanuc",
+            Self::Makera => "makera",
         }
     }
 
@@ -73,6 +80,7 @@ impl FromStr for Dialect {
             "linuxcnc" | "linux-cnc" | "linux_cnc" => Ok(Self::LinuxCnc),
             "mach3" | "mach4" => Ok(Self::Mach3),
             "fanuc" => Ok(Self::Fanuc),
+            "makera" | "makera-z1" | "makera_z1" => Ok(Self::Makera),
             other => Err(CoreError::UnknownDialect(other.to_string())),
         }
     }
@@ -94,7 +102,15 @@ mod tests {
     fn only_fanuc_dwell_is_milliseconds() {
         assert!(!Dialect::Generic.dwell_p_is_milliseconds());
         assert!(!Dialect::Grbl.dwell_p_is_milliseconds());
+        assert!(!Dialect::Makera.dwell_p_is_milliseconds());
         assert!(Dialect::Fanuc.dwell_p_is_milliseconds());
+    }
+
+    #[test]
+    fn makera_aliases_resolve() {
+        assert_eq!(Dialect::from_str("makera"), Ok(Dialect::Makera));
+        assert_eq!(Dialect::from_str("Makera-Z1"), Ok(Dialect::Makera));
+        assert_eq!(Dialect::from_str("makera_z1"), Ok(Dialect::Makera));
     }
 
     #[test]

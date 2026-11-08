@@ -1,7 +1,7 @@
 //! In-app, local-only program browser and bounded source reader.
 //!
 //! The browser lists one directory at a time: visible subdirectories and files
-//! whose extension is `.nc`, `.gcode`, `.tap`, or `.ngc` (ASCII
+//! whose extension is `.nc`, `.gcode`, `.tap`, `.ngc`, or `.cnc` (ASCII
 //! case-insensitive). Hidden entries and symlinks are skipped, so navigation
 //! cannot loop through a link or surprise the operator with a dotfile.
 //!
@@ -19,7 +19,7 @@ use std::sync::Arc;
 pub const MAX_PROGRAM_BYTES: u64 = 20 * 1024 * 1024;
 
 /// Extensions shown by the browser and accepted by [`read_program`].
-pub const PROGRAM_EXTENSIONS: [&str; 4] = ["nc", "gcode", "tap", "ngc"];
+pub const PROGRAM_EXTENSIONS: [&str; 5] = ["nc", "gcode", "tap", "ngc", "cnc"];
 
 /// Maximum entries listed from one directory.
 ///
@@ -75,7 +75,7 @@ impl fmt::Display for BrowseError {
             Self::NotADirectory(path) => write!(formatter, "'{path}' is not a readable folder"),
             Self::NotAProgramFile(name) => write!(
                 formatter,
-                "'{name}' is not a .nc, .gcode, .tap, or .ngc program"
+                "'{name}' is not a .nc, .gcode, .tap, .ngc, or .cnc program"
             ),
             Self::Io(message) => formatter.write_str(message),
         }
@@ -112,7 +112,7 @@ impl fmt::Display for ProgramFileError {
             Self::NotAFile(path) => write!(formatter, "'{path}' is not a regular file"),
             Self::UnsupportedExtension(name) => write!(
                 formatter,
-                "'{name}' is not a .nc, .gcode, .tap, or .ngc program"
+                "'{name}' is not a .nc, .gcode, .tap, .ngc, or .cnc program"
             ),
             Self::TooLarge { bytes, limit } => write!(
                 formatter,
@@ -642,12 +642,37 @@ mod tests {
 
     #[test]
     fn extension_filter_is_ascii_case_insensitive() {
-        for name in ["a.nc", "a.GCODE", "a.Tap", "a.NGC"] {
+        for name in ["a.nc", "a.GCODE", "a.Tap", "a.NGC", "a.cnc", "PART.CNC"] {
             assert!(is_program_file(Path::new(name)), "{name}");
         }
-        for name in ["a.txt", "a.ng", "a.nc.bak", "nc"] {
+        for name in ["a.txt", "a.ng", "a.nc.bak", "a.cad", "nc"] {
             assert!(!is_program_file(Path::new(name)), "{name}");
         }
+    }
+
+    #[test]
+    fn cnc_extension_is_listed_with_a_cnc_badge() {
+        let dir = scratch_dir("cnc");
+        fs::write(dir.join("part.cnc"), "G0 X0\n").expect("write cnc");
+        fs::write(dir.join("PART.CNC"), "G0 X0\n").expect("write upper cnc");
+        fs::write(dir.join("notes.txt"), "not a program").expect("write txt");
+        fs::write(dir.join("part.cnc.bak"), "G0 X0\n").expect("write backup");
+
+        let entries = list_directory(&dir).expect("list");
+        let names = entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["PART.CNC", "part.cnc"]);
+        for entry in &entries {
+            assert_eq!(entry.kind_label(), "CNC", "{}", entry.name);
+        }
+        assert!(is_program_file(&dir.join("part.cnc")));
+        assert!(is_program_file(&dir.join("PART.CNC")));
+        assert!(!is_program_file(&dir.join("notes.txt")));
+        assert!(!is_program_file(&dir.join("part.cnc.bak")));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

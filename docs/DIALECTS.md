@@ -5,10 +5,12 @@ stock, or machine limits, and it never makes an unknown code safe.
 
 ## Verification status
 
-No vendor documentation could be consulted while this table was first written.
-Rows marked **unverified** must be checked against the vendor manual before the
-rule that depends on them is considered stable. `Generic` is an explicit
-conservative profile, not a claim about a real control.
+The `generic` profile is an explicit conservative profile, not a claim about a
+real control. The `makera` row was checked against the Makera and Smoothieware
+tables on 2026-11-08, and the `grbl` additional-code list was checked against
+the grblHAL wiki. Rows marked **unverified** still need their vendor manual
+checked before the rule that depends on them is considered stable. Sources are
+listed at the end of the Makera section.
 
 ## Semantics
 
@@ -19,6 +21,7 @@ conservative profile, not a claim about a real control.
 | `linuxcnc` | seconds | honor `G98`/`G99` | `I`/`J`/`K` and `R`; all planes | stored home position | machine-coordinate move | unverified |
 | `mach3` | seconds | honor `G98`/`G99` | `I`/`J`/`K` and `R`; all planes | stored home position | machine-coordinate move | unverified |
 | `fanuc` | milliseconds (`P`) | honor `G98`/`G99` | `I`/`J`/`K` and `R`; all planes | reference return | machine-coordinate move | unverified |
+| `makera` | seconds | honor `G98`/`G99` (not listed by the vendor) | `I`/`J`/`K`; `G17`/`G18`/`G19` | controller-defined clearance move, no invented target | machine-coordinate move | vendor M/G table checked 2026-11-08; canned cycles unlisted |
 
 Notes:
 
@@ -27,10 +30,41 @@ Notes:
   changes the R plane mid-run is reported when it is not representable.
 - Radius-format arcs that are geometrically impossible are errors, never a
   guessed center.
-- `G28`/`G30` and `G53` always produce machine-coordinate targets. They are
-  flagged by `modal.machine_coords`; the toolpath shows the programmed target,
-  not a simulated home search.
+- For every dialect except `makera`, `G28`/`G30` and `G53` produce
+  machine-coordinate targets. They are flagged by `modal.machine_coords`; the
+  toolpath shows the programmed target, not a simulated home search. In
+  `makera`, `G28`/`G30` are a clearance command and are neither drawn nor
+  flagged as a machine-coordinate move.
 - `G93` inverse-time feed is recorded but feed-based rules skip it.
+
+## Makera Z1 / Carvera
+
+Makera firmware is Smoothieware-derived, so the Makera profile accepts the
+Smoothieware motion codes already covered by the shared parser and adds the
+auxiliary-output family used by Makera posts:
+
+| Code | Meaning | Viewer handling |
+|---|---|---|
+| `M400` | wait for queued moves to finish | non-motion; no modal change |
+| `M851 S<n>` | extended-port power on; `S` is PWM percent | non-motion; `S` never changes spindle RPM |
+| `M852` | extended-port power off | non-motion |
+| `M7` | airflow on | mapped to the coolant-mist state |
+| `M9` | airflow off | mapped to coolant off |
+| `G28` | controller-defined clearance position | non-motion; the target is not invented |
+
+Unknown Makera auxiliary codes (vacuum, light, probe charging, laser, ATC, and
+so on) are not silently accepted. A lossy run reports the skipped block. The
+laser and ATC families are out of scope for this 3-axis mill viewer.
+
+`G28` is the only vendor-documented clearance form. `G30` is treated the same
+way for safety; the vendor page does not list it.
+
+Sources checked 2026-11-08:
+
+- Makera supported codes: <https://wiki.makera.com/en/supported-codes>
+- Smoothieware supported G-codes: <https://smoothieware.org/supported-g-codes>
+- grblHAL additional G/M codes (for the existing `grbl` profile):
+  <https://github.com/grblHAL/core/wiki/Additional-G--and-M-codes>
 
 ## Default dialect
 

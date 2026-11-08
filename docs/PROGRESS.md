@@ -58,6 +58,8 @@ project knowledge store is lost.
 | 2026-11-08 | v0.1 review fixes: workspace fmt/clippy/test/doc | pass; docs-vs-registry test added |
 | 2026-11-08 | 1M-line synthetic: release check | 0.745 s, ~420 MiB RSS; memory target miss recorded (D030) |
 | 2026-11-08 | parser corrections: clippy + `cargo test -p nc-gcode -p nc-stock -p nc-sim` | pass; real file 119,393 records, 0 errors, 336 ms |
+| 2026-11-08 | Makera dialect: `cargo test -p nc-gcode -p nc-fixtures` | pass, 263 tests; LatchBase 7,550 lines, 0 skipped, 0 parse findings, 31/45 |
+| 2026-11-08 | Makera + .cnc + orbit drag: workspace fmt/clippy/test/doc + deny | pass, 44 suites, deny ok |
 
 ## Accepted milestones
 
@@ -100,6 +102,9 @@ project knowledge store is lost.
 - **v0.1 review fixes** — lossy app parse, exact arc extents, coverage
   headlines, raw-byte BOM hash, unknown rule ids, exact stock extents, enforced
   golden set, fixture notes (2026-11-08).
+- **Post-v0.1: Makera Z1** — `makera` dialect (Smoothieware `M400`, Makera
+  `M851`/`M852`, clearance `G28`), real `LatchBase.nc` fixture, `.cnc` file
+  extension, inverted 3D vertical orbit drag (2026-11-08).
 - **Full workspace gate** — fmt, clippy `-D warnings`, tests, and docs clean
   (2026-11-08).
 

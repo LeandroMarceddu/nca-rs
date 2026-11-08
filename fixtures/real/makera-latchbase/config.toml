@@ -1,0 +1,3 @@
+# Makera Z1 post: Smoothieware-derived codes plus Makera auxiliary outputs.
+[parse]
+dialect = "makera"

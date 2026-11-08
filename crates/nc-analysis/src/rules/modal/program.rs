@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use nc_core::Wcs;
+use nc_core::{Dialect, Wcs};
 use nc_gcode::{AnnotationKind, MotionRecord, MoveKind, Program, ProgramLine, SpindleMode};
 use nc_stock::{InferenceBasis, StockSource};
 
@@ -81,12 +81,19 @@ impl Rule for MachineCoords {
 
     fn evaluate(&self, model: &AnalysisModel<'_>, _cfg: &RuleSettings) -> RuleOutcome {
         let mut findings = Vec::new();
+        // Makera's G28/G30 are controller-defined clearance moves, not a move
+        // to a stored machine reference. They are still a non-motion command
+        // and the parser does not invent a target for them (see DIALECTS.md).
+        let makera_clearance = model.dialect == Dialect::Makera;
         for line in &model.program.lines {
             let Some(word) = line.words.iter().find(|word| {
                 word.letter == 'G'
-                    && MACHINE_CODES
-                        .iter()
-                        .any(|code| word_matches(word.value, *code))
+                    && MACHINE_CODES.iter().any(|code| {
+                        word_matches(word.value, *code)
+                            && !(makera_clearance
+                                && (word_matches(word.value, 28.0)
+                                    || word_matches(word.value, 30.0)))
+                    })
             }) else {
                 continue;
             };

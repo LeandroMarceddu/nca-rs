@@ -351,3 +351,27 @@ consequence for the contract.
   is caught, coverage arithmetic is honest, and a typo cannot disable a rule.
   `RULESET_VERSION` stays `1.0.0` because v0.1 has not shipped a report
   format; the travel-rule behavior is reflected in the regenerated goldens.
+
+## D037 - Makera Z1 is a first-class dialect
+
+- **Decision:** Add `Dialect::Makera` (aliases `makera`, `makera-z1`,
+  `makera_z1`). It accepts Smoothieware `M400` and Makera `M851`/`M852` as
+  non-motion commands. `M851 S<n>` is a PWM percentage and never changes
+  spindle RPM. `G28`/`G30` are controller-defined clearance moves: no target is
+  invented and `modal.machine_coords` does not flag them. `G53` and the
+  `G28.1`/`G30.1` set-home forms still fire.
+- **Reason:** The real `LatchBase.nc` post emits these codes; skipping them made
+  the file look partially understood on every tool change.
+- **Consequence:** Makera auxiliary codes not exercised by the fixture (vacuum,
+  light, probe charging, laser, ATC) remain unknown and are reported when
+  skipped. Laser and ATC are outside the 3-axis mill scope. `.cnc` is accepted
+  as a program extension alongside `.nc`/`.gcode`/`.tap`/`.ngc`.
+
+## D038 - 3D vertical orbit drag is inverted
+
+- **Decision:** In the 3D view, dragging down raises the orbit eye and dragging
+  up lowers it; horizontal yaw still follows the drag. 2D pan and 3D shift-pan
+  keep content-follows-pointer behavior.
+- **Reason:** The original vertical mapping felt inverted in use.
+- **Consequence:** A viewer test pins the sign so a later camera refactor cannot
+  silently restore the old direction.

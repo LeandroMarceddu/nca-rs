@@ -99,6 +99,12 @@ pub(crate) enum MCode {
     FloodOn,
     CoolantOff,
     ProgramEndRewind,
+    /// `M400`: wait until every queued move has finished (Smoothieware).
+    WaitForMoves,
+    /// `M851 S<pwm>`: Makera extended-port power on, S is a PWM percentage.
+    ExtendedPortOn,
+    /// `M852`: Makera extended-port power off.
+    ExtendedPortOff,
 }
 
 /// Modal group of a G-code, used to reject two codes that fight.
@@ -125,6 +131,10 @@ pub(crate) enum MGroup {
     Spindle,
     ToolChange,
     Coolant,
+    /// `M400` synchronization; can share a block with an auxiliary output.
+    Synchronization,
+    /// Makera auxiliary outputs such as `M851`/`M852`.
+    Auxiliary,
 }
 
 impl GCode {
@@ -192,6 +202,8 @@ impl MCode {
             }
             Self::ToolChange => MGroup::ToolChange,
             Self::MistOn | Self::FloodOn | Self::CoolantOff => MGroup::Coolant,
+            Self::WaitForMoves => MGroup::Synchronization,
+            Self::ExtendedPortOn | Self::ExtendedPortOff => MGroup::Auxiliary,
         }
     }
 }
@@ -707,6 +719,9 @@ fn parse_m_code(value: f64) -> Result<MCode, (ParseErrorKind, String)> {
         8 => MCode::FloodOn,
         9 => MCode::CoolantOff,
         30 => MCode::ProgramEndRewind,
+        400 => MCode::WaitForMoves,
+        851 => MCode::ExtendedPortOn,
+        852 => MCode::ExtendedPortOff,
         10 | 11 => {
             return Err((
                 ParseErrorKind::UnsupportedCode,
@@ -772,6 +787,9 @@ mod tests {
         assert_eq!(parse_g_code(92.1), Ok(GCode::ClearOffsets));
         assert_eq!(parse_m_code(6.0), Ok(MCode::ToolChange));
         assert_eq!(parse_m_code(30.0), Ok(MCode::ProgramEndRewind));
+        assert_eq!(parse_m_code(400.0), Ok(MCode::WaitForMoves));
+        assert_eq!(parse_m_code(851.0), Ok(MCode::ExtendedPortOn));
+        assert_eq!(parse_m_code(852.0), Ok(MCode::ExtendedPortOff));
     }
 
     #[test]

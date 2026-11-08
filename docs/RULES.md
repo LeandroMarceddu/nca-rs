@@ -61,7 +61,7 @@ default rather than disabling a rule.
 | `modal.tool_unknown` | Warning | Exact | - | tool table or hints non-empty | `T` not in the resolved table |
 | `modal.tool_zero` | Warning | Exact | - | - | Cutting with `T0` |
 | `modal.tool_change_mismatch` | Warning | Exact | - | - | `T` without `M6`, or `M6` without `T` |
-| `modal.machine_coords` | Warning | Exact | - | - | `G53`/`G28`/`G30` or machine-coordinate targets |
+| `modal.machine_coords` | Warning | Exact | - | - | `G53`/`G28`/`G30` or machine-coordinate targets (not Makera clearance `G28`/`G30`) |
 | `modal.probe_in_job` | Warning | Exact | - | - | `G38.x` probe in a normal job |
 | `modal.g92_unrestored` | Warning | Exact | - | - | `G92` active at program end |
 | `modal.wcs_change` | Warning | Exact | - | - | WCS change after cutting starts |
@@ -116,6 +116,8 @@ default rather than disabling a rule.
 - **Machine coordinates:** `modal.machine_coords` scans source words for
   `G53`/`G28`/`G30`. `MotionRecord` has no machine-coordinate flag, so a
   hand-built program cannot express this without source words; see D022.
+  In the `makera` dialect, `G28`/`G30` are controller-defined clearance moves
+  and are excluded; `G53` and the `G28.1`/`G30.1` set-home forms still fire.
 - **WCS change after cutting:** a `G54`-`G59.3` change whose line is after the
   first cutting motion.
 - **End state:** spindle on, coolant on, or the final tool Z below safe Z.

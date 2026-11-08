@@ -198,6 +198,7 @@ fn dialect_label(dialect: Dialect) -> &'static str {
         Dialect::LinuxCnc => "linux_cnc",
         Dialect::Mach3 => "mach3",
         Dialect::Fanuc => "fanuc",
+        Dialect::Makera => "makera",
     }
 }
 

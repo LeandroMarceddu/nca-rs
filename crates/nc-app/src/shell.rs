@@ -1612,7 +1612,7 @@ impl NcaShell {
             [path] if path.is_file() => self.open_path(path.clone(), cx),
             [] => {
                 self.load_error =
-                    Some("Drop one .nc, .gcode, .tap, or .ngc program file".to_string());
+                    Some("Drop one .nc, .gcode, .tap, .ngc, or .cnc program file".to_string());
                 cx.notify();
             }
             [path] => {

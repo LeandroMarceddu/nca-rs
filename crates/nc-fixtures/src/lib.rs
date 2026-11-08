@@ -58,7 +58,10 @@ pub const SYNTHETIC_FIXTURES: [&str; 13] = [
 ///
 /// `box54-lid-50cm` is a large model-heavy program; it is locked by
 /// `tests/real_file.rs` for determinism, caps, and performance instead.
-pub const REAL_FIXTURES_WITHOUT_GOLDEN: [&str; 1] = ["box54-lid-50cm"];
+/// `makera-latchbase` is the first real Makera/Smoothieware fixture; it is
+/// locked for a clean parse and tool resolution until its model findings are
+/// reviewed.
+pub const REAL_FIXTURES_WITHOUT_GOLDEN: [&str; 2] = ["box54-lid-50cm", "makera-latchbase"];
 
 /// A loaded fixture. Source and config are kept as text so tests can hash and
 /// rerun the exact bytes that were reviewed.

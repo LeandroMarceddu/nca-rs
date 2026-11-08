@@ -10,7 +10,7 @@
 Build a **read-only NC viewer, deterministic preflight analyzer, and stock
 simulator** for 3-axis CNC milling G-code.
 
-The user opens a `.nc` / `.gcode` / `.tap` / `.ngc` file. The app:
+The user opens a `.nc` / `.gcode` / `.tap` / `.ngc` / `.cnc` file. The app:
 
 1. Parses it, including errors, without a controller.
 2. Renders the toolpath in 2D top view and 3D orbit view.
@@ -155,7 +155,7 @@ before Phase 1. Implementers code against `INTERFACES.md`.
 ```rust
 pub enum ToolShape { Flat, Ball, Bull, Drill, VBit, Unknown }
 
-pub enum Dialect { Generic, Grbl, LinuxCnc, Mach3, Fanuc }   // default Generic
+pub enum Dialect { Generic, Grbl, LinuxCnc, Mach3, Fanuc, Makera } // default Generic
 
 pub enum ToolField {
     Name, Shape, Diameter, Flutes, Stickout, FluteLength, TipAngle,
@@ -457,7 +457,7 @@ TOML config (human-edited):
 
 ```toml
 [parse]
-dialect = "generic"            # generic | grbl | linuxcnc | mach3 | fanuc
+dialect = "generic"            # generic | grbl | linuxcnc | mach3 | fanuc | makera
 
 [machine]
 travel_min_mm = [0, 0, -120]
@@ -687,10 +687,11 @@ line fails. A viewer needs a lossy mode. Add:
      index if needed.
 4. **Permissive dialect policy**
    - Unknown words/codes are diagnostics, not fatal.
-   - `ParseConfig::dialect` selects dialect semantics (default `Generic`, which
-     emits an Info `parse.dialect_assumed` once per file). `docs/DIALECTS.md`
+   - `ParseConfig::dialect` selects dialect semantics (default `Generic`; also
+     `Grbl`, `LinuxCnc`, `Mach3`, `Fanuc`, and `Makera`). An omitted dialect
+     emits an Info `parse.dialect_assumed` once per file. `docs/DIALECTS.md`
      lists, per dialect: the unit of `G4 P` (seconds in Grbl/LinuxCNC/Mach3/
-     Generic; Fanuc-style milliseconds), canned-cycle retract behavior
+     Generic/Makera; Fanuc-style milliseconds), canned-cycle retract behavior
      (G98/G99), accepted arc formats, and the meaning of G28/G30/G53. Verify
      each row against vendor documentation and mark unverified rows as such.
    - `G41/G42`: v1 shows the programmed centerline, does not apply cutter

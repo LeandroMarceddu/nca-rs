@@ -36,7 +36,7 @@ Rules:
 
 ```rust
 pub enum ToolShape { Flat, Ball, Bull, Drill, VBit, Unknown } // Default: Unknown
-pub enum Dialect { Generic, Grbl, LinuxCnc, Mach3, Fanuc }   // Default: Generic
+pub enum Dialect { Generic, Grbl, LinuxCnc, Mach3, Fanuc, Makera } // Default: Generic
 pub enum ToolField {
     Name, Shape, Diameter, Flutes, Stickout, FluteLength, TipAngle,
     CornerRadius, ShankDiameter, HolderDiameter, RightHand,
@@ -675,9 +675,11 @@ pub struct AnalysisModel<'a> {
     pub tolerances: &'a Tolerances,
     pub engagement: OnceCell<EngagementData>,
     pub dialect_assumed: bool,
+    pub dialect: Dialect,
 }
 impl<'a> AnalysisModel<'a> {
     pub fn with_dialect_assumed(self, assumed: bool) -> Self;
+    pub fn with_dialect(self, dialect: Dialect) -> Self;
 }
 ```
 
@@ -757,7 +759,7 @@ holds only when each skipped rule has exactly one missing input.
 
 ```toml
 [parse]
-dialect = "generic"            # generic | grbl | linuxcnc | mach3 | fanuc
+dialect = "generic"            # generic | grbl | linuxcnc | mach3 | fanuc | makera
 
 [machine]
 travel_min_mm = [0, 0, -120]
@@ -815,7 +817,7 @@ Schema rules:
   override the preset;
 - `[rules."<id>"]` accepts `enabled` (default true), `severity`, and every other
   numeric key as a flattened threshold;
-- `dialect` accepts `generic|grbl|linuxcnc|linux_cnc|mach3|fanuc`; an omitted
+- `dialect` accepts `generic|grbl|linuxcnc|linux_cnc|mach3|fanuc|makera|makera-z1`; an omitted
   dialect is `Generic` with `dialect_assumed = true`;
 - duplicate tool numbers, unknown keys, and unknown `[rules."<id>"]` ids are errors;
 - `ConfigError` carries an optional file/line/column location; `UnknownRule`

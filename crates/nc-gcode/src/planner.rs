@@ -5,7 +5,7 @@
 //! error. The parser then executes the plan: it applies the modal state and
 //! emits the prepared moves.
 
-use nc_core::{Axis, Position, Wcs, math};
+use nc_core::{Axis, Dialect, Position, Wcs, math};
 use nc_viewer::MoveKind;
 
 use crate::block::{Block, GCode, GWord, MCode, Value};
@@ -647,6 +647,22 @@ impl Planner<'_> {
                         tool: draft.state.tool,
                     });
                 }
+                MCode::WaitForMoves | MCode::ExtendedPortOn | MCode::ExtendedPortOff => {
+                    if self.config.dialect != Dialect::Makera {
+                        let label = match word.code {
+                            MCode::WaitForMoves => "M400",
+                            MCode::ExtendedPortOn => "M851",
+                            _ => "M852",
+                        };
+                        return Err(self.error(
+                            word.column,
+                            ParseErrorKind::UnknownCode,
+                            format!("{label} is only supported by the makera dialect"),
+                        ));
+                    }
+                    // Waiting and auxiliary outputs have no display geometry
+                    // and do not change the modelled modal state.
+                }
                 MCode::ProgramEnd | MCode::ProgramEndRewind => draft.program_end = true,
                 MCode::ProgramStop | MCode::OptionalStop => {}
             }
@@ -695,7 +711,15 @@ impl Planner<'_> {
                 draft.feed_observed = Some(feed);
             }
         }
-        if let Some(word) = block.s {
+        // On an M851 block the S word is the extended-port PWM percentage,
+        // not a spindle speed. Leave the modal spindle RPM untouched.
+        let auxiliary_pwm = block
+            .m
+            .iter()
+            .any(|word| word.code == MCode::ExtendedPortOn);
+        if let Some(word) = block.s
+            && !auxiliary_pwm
+        {
             if word.value < 0.0 {
                 return Err(self.error(
                     word.column,
@@ -764,6 +788,13 @@ impl Planner<'_> {
                 Ok(())
             }
             GCode::SetCoordinateSystem => self.plan_g10(draft, block, word.column),
+            // Makera's G28/G30 go to a controller-defined clearance position.
+            // The viewer does not invent that target: the block is a
+            // non-motion command and any axis words are intermediate points.
+            GCode::Home | GCode::SecondHome if self.config.dialect == Dialect::Makera => {
+                draft.used.axes = [true; 3];
+                Ok(())
+            }
             GCode::Home => self.plan_home(draft, block, false),
             GCode::SecondHome => self.plan_home(draft, block, true),
             GCode::SetHome | GCode::SetSecondHome => {

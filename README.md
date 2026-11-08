@@ -3,7 +3,7 @@
 A read-only NC viewer, deterministic preflight analyzer, and stock simulator
 for 3-axis CNC milling G-code.
 
-Open a `.nc`, `.gcode`, `.tap`, or `.ngc` file. The app parses it without a
+Open a `.nc`, `.gcode`, `.tap`, `.ngc`, or `.cnc` file. The app parses it without a
 controller, renders the toolpath in 2D and 3D, runs explicit rules over the
 program and geometry, shows every finding with its source line and evidence,
 and can replay the toolpath as a 2.5D stock-removal preview.

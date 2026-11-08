@@ -76,7 +76,7 @@ pub enum ConfigError {
     },
     /// `[parse] dialect` names an unsupported dialect.
     #[error(
-        "{location}: unknown dialect {value:?}; expected generic, grbl, linuxcnc, mach3 or fanuc"
+        "{location}: unknown dialect {value:?}; expected generic, grbl, linuxcnc, mach3, fanuc or makera"
     )]
     UnknownDialect {
         /// File and span, when known.
@@ -739,6 +739,13 @@ clearance_mm = 2.5
     fn explicit_dialect_is_not_assumed() {
         let loaded = parse_config("[parse]\ndialect = \"linux_cnc\"\n").expect("config");
         assert_eq!(loaded.dialect, Dialect::LinuxCnc);
+        assert!(!loaded.dialect_assumed);
+    }
+
+    #[test]
+    fn makera_dialect_is_accepted() {
+        let loaded = parse_config("[parse]\ndialect = \"makera\"\n").expect("config");
+        assert_eq!(loaded.dialect, Dialect::Makera);
         assert!(!loaded.dialect_assumed);
     }
 

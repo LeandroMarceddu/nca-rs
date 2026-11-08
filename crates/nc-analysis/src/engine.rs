@@ -150,7 +150,8 @@ pub fn analyze(program: &Program, request: &AnalysisRequest<'_>, rules: &RuleReg
         config.material.as_ref(),
         &tolerances,
     )
-    .with_dialect_assumed(request.dialect_assumed);
+    .with_dialect_assumed(request.dialect_assumed)
+    .with_dialect(request.dialect);
 
     let mut diagnostics = Vec::new();
     let mut skipped = Vec::new();

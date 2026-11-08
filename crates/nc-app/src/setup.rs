@@ -1317,6 +1317,55 @@ clearance_mm = 1.5
     }
 
     #[test]
+    fn makera_selection_is_explicit_and_reaches_analysis() {
+        assert!(
+            Dialect::ALL.contains(&Dialect::Makera),
+            "the setup selector iterates Dialect::ALL"
+        );
+        assert_eq!(Dialect::Makera.label().to_uppercase(), "MAKERA");
+
+        let mut setup = SetupState::default();
+        assert!(setup.dialect_assumed);
+        setup.set_dialect(Dialect::Makera);
+        assert_eq!(setup.dialect, Dialect::Makera);
+        assert!(!setup.dialect_assumed);
+
+        let choice = crate::analysis_worker::DialectChoice {
+            dialect: setup.dialect,
+            assumed: setup.dialect_assumed,
+        };
+        assert_eq!(choice.dialect, Dialect::Makera);
+        assert!(!choice.assumed);
+
+        let source = "G21 G90\nG1 X10 F100\n";
+        let program = parse_program(source).expect("program");
+        let config = setup.analysis_config(ToolTable::new());
+        let registry = RuleRegistry::from_rules(nc_analysis::rules::all());
+        let request = AnalysisRequest::new("part.nc", source, &config, choice.dialect)
+            .with_dialect_assumed(choice.assumed);
+        let report = analyze(&program, &request, &registry);
+        assert_eq!(report.input.dialect, Dialect::Makera);
+        assert!(
+            !report
+                .diagnostics
+                .iter()
+                .any(|finding| finding.rule.as_str() == "parse.dialect_assumed"),
+            "an explicit Makera choice must not be reported as assumed"
+        );
+
+        let assumed_request = AnalysisRequest::new("part.nc", source, &config, Dialect::Generic)
+            .with_dialect_assumed(true);
+        let assumed_report = analyze(&program, &assumed_request, &registry);
+        assert!(
+            assumed_report
+                .diagnostics
+                .iter()
+                .any(|finding| finding.rule.as_str() == "parse.dialect_assumed"),
+            "the assumed diagnostic must fire for the default Generic choice"
+        );
+    }
+
+    #[test]
     fn explicit_stock_validation_and_revision() {
         let mut setup = SetupState::default();
         let inferred =

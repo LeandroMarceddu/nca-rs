@@ -582,6 +582,20 @@ fn machine_coords_reports_each_g53_g28_g30_line() {
 }
 
 #[test]
+fn machine_coords_skips_makera_clearance_g28_and_g30() {
+    let source = "G21 G90\nG53 G0 X10\nG28\nG30\nM30\n";
+    let program = parse_program(source).expect("valid program");
+    let registry = modal_only("modal.machine_coords");
+    let config = AnalysisConfig::default();
+    let request = AnalysisRequest::new("part.nc", source, &config, Dialect::Makera);
+    let report = analyze(&program, &request, &registry);
+
+    assert_eq!(report.coverage.evaluated, 1);
+    assert_eq!(report.diagnostics.len(), 1);
+    assert_eq!(report.diagnostics[0].line, 2);
+}
+
+#[test]
 fn machine_coords_is_silent_for_work_coordinates() {
     let source = "G21 G90\nG0 X10\nM30\n";
     let program = parse_program(source).expect("valid program");
