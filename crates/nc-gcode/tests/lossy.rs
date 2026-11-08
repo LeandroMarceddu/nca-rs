@@ -34,16 +34,16 @@ fn source_line_count(text: &str) -> usize {
 #[test]
 fn a_bad_block_is_skipped_and_modal_state_is_kept() {
     let result = parse_program_lossy(
-        "G21 G90\nG0 X10\nG1 X20\nG1 X30 F100\n",
+        "G21 G90\nG0 X10\nG1 X20 Q2\nG1 X30 F100\n",
         &ParserConfig::default(),
     );
     assert_eq!(result.errors.len(), 1);
-    assert_eq!(result.errors[0].kind, ParseErrorKind::FeedRateUndefined);
+    assert_eq!(result.errors[0].kind, ParseErrorKind::UnusedWord);
     assert_eq!(result.errors[0].line, 3);
     assert_eq!(result.skipped_blocks.len(), 1);
     assert_eq!(result.skipped_blocks[0].line, 3);
-    assert_eq!(result.skipped_blocks[0].reason, "feed_rate_undefined");
-    assert_eq!(result.skipped_blocks[0].source, "G1 X20");
+    assert_eq!(result.skipped_blocks[0].reason, "unused_word");
+    assert_eq!(result.skipped_blocks[0].source, "G1 X20 Q2");
     assert_eq!(result.program.motions.len(), 2);
     assert_eq!(result.program.motions[1].start_mm, [10.0, 0.0, 0.0]);
     assert_eq!(result.program.motions[1].end_mm, [30.0, 0.0, 0.0]);
@@ -51,8 +51,64 @@ fn a_bad_block_is_skipped_and_modal_state_is_kept() {
     assert_eq!(result.trusted_geometry_until, None);
     // The skipped line stays in the program list with its source.
     assert_eq!(result.program.lines[2].line, 3);
-    assert_eq!(result.program.lines[2].source, "G1 X20");
+    assert_eq!(result.program.lines[2].source, "G1 X20 Q2");
     assert!(result.program.lines[2].segments.is_empty());
+}
+
+#[test]
+fn lossy_keeps_feedless_cuts_with_unknown_feed() {
+    let text = "G21 G90\nG0 Z5\nG1 Z-1\nG1 X10\n";
+    let strict = parse_program_with(text, &ParserConfig::default()).expect_err("strict feed");
+    assert_eq!(strict[0].kind, ParseErrorKind::FeedRateUndefined);
+    assert_eq!(strict[0].line, 3);
+
+    let result = parse_program_lossy(text, &ParserConfig::default());
+    assert!(result.errors.is_empty());
+    assert!(result.skipped_blocks.is_empty());
+    assert!(result.program.skipped_blocks().is_empty());
+    assert_eq!(result.trusted_geometry_until, None);
+    assert_eq!(result.program.motions.len(), 3);
+    assert_eq!(result.program.toolpath.len(), 3);
+    assert_eq!(result.program.motions[1].kind, nc_gcode::MoveKind::Plunge);
+    assert_eq!(result.program.motions[1].feed_mm_min, None);
+    assert_eq!(result.program.motions[2].kind, nc_gcode::MoveKind::Feed);
+    assert_eq!(result.program.motions[2].feed_mm_min, None);
+    assert_eq!(result.program.motions[2].end_mm, [10.0, 0.0, -1.0]);
+    assert!(
+        result
+            .program
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == WarningKind::MissingFeed)
+    );
+}
+
+#[test]
+fn strict_programs_have_no_skipped_blocks() {
+    let program = nc_gcode::parse_program("G0 X1\nG1 X2 F100\n").expect("strict");
+    assert!(program.skipped_blocks().is_empty());
+    assert!(program.skipped_blocks.is_empty());
+}
+
+#[test]
+fn skipped_blocks_are_stored_on_the_program() {
+    let result = parse_program_lossy("G0 X1\nG123\nM98 P1\nG0 X3\n", &ParserConfig::default());
+    assert_eq!(result.errors.len(), 2);
+    assert_eq!(result.skipped_blocks.len(), 2);
+    assert_eq!(result.skipped_blocks[0].line, 2);
+    assert_eq!(result.skipped_blocks[0].source, "G123");
+    assert_eq!(result.skipped_blocks[0].reason, "unknown_code");
+    assert_eq!(result.skipped_blocks[1].line, 3);
+    assert_eq!(result.skipped_blocks[1].source, "M98 P1");
+    assert_eq!(result.skipped_blocks[1].reason, "unsupported_code");
+
+    assert_eq!(result.program.skipped_blocks.len(), 2);
+    assert_eq!(
+        result.program.skipped_blocks(),
+        result.skipped_blocks.as_slice()
+    );
+    assert_eq!(result.program.skipped_blocks()[1].line, 3);
+    assert_eq!(result.trusted_geometry_until, Some(3));
 }
 
 #[test]
@@ -179,7 +235,7 @@ fn too_many_errors_stop_the_lossy_scan() {
         max_errors: 2,
         ..ParserConfig::default()
     };
-    let result = parse_program_lossy("G1 X1\nG1 X2\nG1 X3\nG0 X4\n", &config);
+    let result = parse_program_lossy("G123\nG123\nG123\nG123\n", &config);
     assert_eq!(result.errors.len(), 3);
     assert_eq!(
         result.errors.last().expect("last").kind,

@@ -42,6 +42,8 @@ project knowledge store is lost.
 | 2026-11-08 | Phase 1 gate: fmt + workspace clippy + workspace test | pass |
 | 2026-11-08 | first three rules: clippy + `cargo test -p nc-analysis` | pass, 18 + 25 + 14 + doctest |
 | 2026-11-08 | semantic rendering: viewer/gcode/app tests | pass, 70 viewer + 504 workspace |
+| 2026-11-08 | CLI/config/fixtures: clippy + tests | pass, 35+25+14+5+9+2 |
+| 2026-11-08 | GitHub CI run 42467554129 | success on all jobs |
 
 ## Accepted milestones
 
@@ -61,6 +63,9 @@ project knowledge store is lost.
 - **CLI and fixtures** — strict TOML loader, `nca check|view|simulate|rules`,
   fixture harness and golden comparison (2026-11-08). Goldens are drafts pending
   the feedless/peck parser fixes and review.
+- **Parser correction** — lossy feedless cuts keep a motion with no feed;
+  canned upward returns are `Retract`; `Program` stores skipped blocks
+  (2026-11-08).
 - **CI** — Linux/macOS/Windows builds, Linux clippy/test, GUI build all green
   (run 42467554129).
 

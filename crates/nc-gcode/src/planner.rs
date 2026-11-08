@@ -409,6 +409,8 @@ pub(crate) struct Planner<'a> {
     pub machine: [f64; 3],
     /// Parser configuration.
     pub config: &'a ParserConfig,
+    /// Keep cutting moves whose feed is undefined (lossy mode).
+    pub allow_missing_feed: bool,
     /// Source line for diagnostics.
     pub line: usize,
 }
@@ -1776,9 +1778,16 @@ impl Planner<'_> {
     }
 
     /// Requires a usable feed rate before a feed, arc, probe, or cycle move.
-    fn require_feed(&self, draft: &Draft, column: usize) -> Result<(), Vec<ParseError>> {
+    ///
+    /// In lossy parsing (`allow_missing_feed`) the motion is kept with an
+    /// unknown feed and a warning, so analysis can still see the cut.
+    fn require_feed(&self, draft: &mut Draft, column: usize) -> Result<(), Vec<ParseError>> {
         match draft.state.feed {
             Some(feed) if feed > 0.0 => Ok(()),
+            _ if self.allow_missing_feed => {
+                draft.warnings.push(WarningKind::MissingFeed);
+                Ok(())
+            }
             _ => Err(self.error(
                 column,
                 ParseErrorKind::FeedRateUndefined,

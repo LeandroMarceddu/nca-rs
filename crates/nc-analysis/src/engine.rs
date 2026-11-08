@@ -40,6 +40,8 @@ pub struct AnalysisRequest<'a> {
     pub dialect: Dialect,
     /// Ruleset version recorded in the report.
     pub ruleset_version: &'a str,
+    /// `true` when the dialect was not configured and `Generic` was assumed.
+    pub dialect_assumed: bool,
 }
 
 impl<'a> AnalysisRequest<'a> {
@@ -57,7 +59,15 @@ impl<'a> AnalysisRequest<'a> {
             config,
             dialect,
             ruleset_version: RULESET_VERSION,
+            dialect_assumed: false,
         }
+    }
+
+    /// Records whether `Generic` was assumed instead of configured.
+    #[must_use]
+    pub fn with_dialect_assumed(mut self, assumed: bool) -> Self {
+        self.dialect_assumed = assumed;
+        self
     }
 
     /// Overrides the ruleset version recorded in the report.
@@ -139,7 +149,8 @@ pub fn analyze(program: &Program, request: &AnalysisRequest<'_>, rules: &RuleReg
         config.machine.as_ref(),
         config.material.as_ref(),
         &tolerances,
-    );
+    )
+    .with_dialect_assumed(request.dialect_assumed);
 
     let mut diagnostics = Vec::new();
     let mut skipped = Vec::new();

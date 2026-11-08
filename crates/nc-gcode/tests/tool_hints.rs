@@ -185,11 +185,19 @@ fn user_configuration_wins_over_a_comment_hint() {
 #[test]
 fn comments_on_skipped_lines_are_retained_and_hint_extraction_still_runs() {
     let result = parse_program_lossy(
-        "T1 (D=6mm 2F flat)\nG1 X1\nG0 X2\n",
+        "T1 (D=6mm 2F flat)\nG1 X1 Q2 (skipped note)\nG0 X2\n",
         &ParserConfig::default(),
     );
     assert_eq!(result.errors.len(), 1);
+    assert_eq!(result.skipped_blocks.len(), 1);
     assert_eq!(result.program.comments[0].text, "D=6mm 2F flat");
+    assert!(
+        result
+            .program
+            .comments
+            .iter()
+            .any(|comment| comment.text == "skipped note")
+    );
     assert_eq!(result.program.tool_hints.len(), 1);
     assert!(close(
         result.program.tool_hints[0].diameter_mm.expect("diameter"),

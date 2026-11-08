@@ -73,18 +73,39 @@ fn g83_pecks_in_q_increments_with_full_retracts() {
     assert_eq!(feeds.len(), 2);
     assert!(close(feeds[0].start_mm[2], -1.0));
     assert!(close(feeds[0].end_mm[2], -2.0));
-    assert!(close(feeds[1].start_mm[2], -2.0));
+    assert!(close(feeds[1].start_mm[2], -1.0));
     assert!(close(feeds[1].end_mm[2], -3.0));
 
     let rapids: Vec<_> = moves
         .iter()
         .filter(|motion| motion.kind == MoveKind::Rapid)
         .collect();
-    // Into the clearance plane, full retract to R, and back to the last depth.
-    assert_eq!(rapids.len(), 3);
-    assert!(close(rapids[1].end_mm[2], -1.0));
-    assert!(close(rapids[2].end_mm[2], -2.0));
+    // Only the positioning rapid to R is a rapid; the full retract is a
+    // Retract and the next peck feeds back down from R.
+    assert_eq!(rapids.len(), 1);
+    assert!(close(rapids[0].end_mm[2], -1.0));
     assert_eq!(moves.last().expect("last").kind, MoveKind::Retract);
+}
+
+#[test]
+fn g83_upward_returns_are_retracts_and_rapids_stay_above_r() {
+    let program = parse_program("G0 Z5\nG83 Z-8 R2 Q2 F100").expect("g83");
+    let moves: Vec<_> = program.expanded_motions().skip(1).collect();
+    assert!(!moves.is_empty());
+    for motion in &moves {
+        if motion.end_mm[2] > motion.start_mm[2] {
+            assert_eq!(motion.kind, MoveKind::Retract, "{motion:?}");
+        }
+        if motion.kind == MoveKind::Rapid {
+            assert!(
+                motion.end_mm[2] >= 2.0 - 1e-9,
+                "rapid ends below R: {motion:?}"
+            );
+        }
+    }
+    assert!(moves.iter().any(|motion| motion.kind == MoveKind::Peck));
+    assert_eq!(moves.last().expect("last").kind, MoveKind::Retract);
+    assert!(close(moves.last().expect("last").end_mm[2], 5.0));
 }
 
 #[test]
@@ -96,21 +117,19 @@ fn g73_pecks_with_a_chip_break_retract() {
         .filter(|motion| motion.kind == MoveKind::Peck)
         .collect();
     assert_eq!(feeds.len(), 3);
-    for feed in &feeds {
-        let depth = feed.start_mm[2] - feed.end_mm[2];
-        assert!(depth > 0.0 && depth <= 1.0 + 1e-9);
+    for (feed, expected_end) in feeds.iter().zip([-3.5, -4.5, -5.0]) {
+        assert!(close(feed.end_mm[2], expected_end));
     }
     let retract = moves.last().expect("last");
     assert_eq!(retract.kind, MoveKind::Retract);
     assert!(close(retract.end_mm[2], 0.0));
-    // A chip-break retract never leaves the hole for the clearance plane on
-    // the second peck (the first is clamped by R).
+    // Chip-break returns are Retract moves, never rapids at depth.
     let upward: Vec<_> = moves
         .iter()
-        .filter(|motion| motion.kind == MoveKind::Rapid && motion.end_mm[2] > motion.start_mm[2])
+        .filter(|motion| motion.end_mm[2] > motion.start_mm[2])
         .collect();
-    assert_eq!(upward.len(), 2);
-    assert!(close(upward[1].end_mm[2], -3.5));
+    assert_eq!(upward.len(), 3);
+    assert!(upward.iter().all(|motion| motion.kind == MoveKind::Retract));
 }
 
 #[test]

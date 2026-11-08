@@ -84,6 +84,7 @@ pub struct Parser {
     geometry_uncertain_after_line: Option<usize>,
     suppress_geometry: bool,
     first_motion_line: Option<usize>,
+    allow_missing_feed: bool,
     canned_run: Option<(CannedCycleKind, usize)>,
     next_line: usize,
     ended: bool,
@@ -133,6 +134,7 @@ impl Parser {
             geometry_uncertain_after_line: None,
             suppress_geometry: false,
             first_motion_line: None,
+            allow_missing_feed: false,
             canned_run: None,
             next_line: 1,
             ended: false,
@@ -337,6 +339,7 @@ impl Parser {
             homes: self.homes,
             machine: self.machine,
             config: &self.config,
+            allow_missing_feed: self.allow_missing_feed,
             line,
         };
         let plan = planner.plan(&block)?;
@@ -412,6 +415,7 @@ impl Parser {
             annotations: self.annotations,
             comments,
             tool_hints,
+            skipped_blocks: Vec::new(),
             modal_table: self.modal_table,
             geometry_uncertain_after_line: self.geometry_uncertain_after_line,
         }
@@ -1025,8 +1029,10 @@ pub fn parse_program_lossy(text: &str, config: &ParserConfig) -> LossyProgram {
             source: String::new(),
         });
         let mut parser = Parser::with_config(config);
+        parser.allow_missing_feed = true;
         parser.mark_geometry_uncertain(1);
-        let program = parser.finish();
+        let mut program = parser.finish();
+        program.skipped_blocks = skipped_blocks.clone();
         return LossyProgram {
             program,
             errors,
@@ -1036,6 +1042,7 @@ pub fn parse_program_lossy(text: &str, config: &ParserConfig) -> LossyProgram {
     }
 
     let mut parser = Parser::with_config(config);
+    parser.allow_missing_feed = true;
     for (index, source) in SourceLines::new(text).enumerate() {
         let line = index.saturating_add(1);
         if let Err(mut line_errors) = parser.parse_line_at(line, source) {
@@ -1074,7 +1081,8 @@ pub fn parse_program_lossy(text: &str, config: &ParserConfig) -> LossyProgram {
             }
         }
     }
-    let program = parser.finish();
+    let mut program = parser.finish();
+    program.skipped_blocks = skipped_blocks.clone();
     errors.sort_by_key(|error| (error.line, error.column));
     let trusted_geometry_until = program.geometry_uncertain_after_line;
     LossyProgram {
@@ -1160,6 +1168,7 @@ fn warning_message(kind: WarningKind) -> &'static str {
         WarningKind::AmbiguousToolHint => {
             "tool-comment dimension has no determinable unit; the hint was dropped"
         }
+        WarningKind::MissingFeed => "cutting move has no feed rate; feed-based rules must skip it",
     }
 }
 

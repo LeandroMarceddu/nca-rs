@@ -218,4 +218,7 @@ pub enum WarningKind {
     CutterCompNotApplied,
     /// A tool-comment dimension had no determinable unit and was dropped.
     AmbiguousToolHint,
+    /// A cutting motion had no programmable feed; the lossy parser kept the
+    /// motion with `feed_mm_min` unset so feed-based rules can skip it.
+    MissingFeed,
 }

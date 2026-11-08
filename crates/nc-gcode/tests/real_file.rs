@@ -23,16 +23,13 @@ fn line_of(text: &str, needle: &str) -> usize {
 
 #[test]
 fn crlf_diagnostics_use_one_based_source_lines() {
-    let text = "G21\r\nG0 X1\r\nG1 X2\r\nG1 X3 F100\r\n";
+    let text = "G21\r\nG0 X1\r\nG1 X2 Q3\r\nG1 X3 F100\r\n";
     let result = parse_program_lossy(text, &ParserConfig::default());
     assert_eq!(result.errors.len(), 1);
     assert_eq!(result.errors[0].line, 3);
-    assert_eq!(
-        result.errors[0].kind,
-        nc_gcode::ParseErrorKind::FeedRateUndefined
-    );
+    assert_eq!(result.errors[0].kind, nc_gcode::ParseErrorKind::UnusedWord);
     assert_eq!(result.skipped_blocks[0].line, 3);
-    assert_eq!(result.skipped_blocks[0].source, "G1 X2");
+    assert_eq!(result.skipped_blocks[0].source, "G1 X2 Q3");
     assert_eq!(result.program.motions.len(), 2);
     assert!(
         result

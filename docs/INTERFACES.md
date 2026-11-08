@@ -303,6 +303,7 @@ pub struct Program {
     pub tool_hints: Vec<ToolHint>,
     pub modal_table: Vec<ModalState>,
     pub geometry_uncertain_after_line: Option<usize>,
+    pub skipped_blocks: Vec<SkippedBlock>,
 }
 
 impl Program {
@@ -311,6 +312,7 @@ impl Program {
     pub fn geometry_uncertain_after(&self) -> Option<usize>;
     pub fn expanded_motions(&self) -> impl Iterator<Item = MotionRecord> + '_;
     pub fn line_for_segment(&self, segment: usize) -> Option<&ProgramLine>;
+    pub fn skipped_blocks(&self) -> &[SkippedBlock];
 }
 ```
 
@@ -368,7 +370,7 @@ pub struct ParserConfig {
 
 `ParserState` carries `pub cutter_comp: CutterComp`; `ProgramStats::tools` is
 `Vec<u32>`; `ParseErrorKind` adds `FileTooLarge` and `key()`; `WarningKind`
-adds `CutterCompNotApplied` and `AmbiguousToolHint`.
+adds `CutterCompNotApplied`, `AmbiguousToolHint`, and `MissingFeed`.
 
 ### Tool hints
 
@@ -669,6 +671,10 @@ pub struct AnalysisModel<'a> {
     pub material: Option<&'a MaterialPreset>,
     pub tolerances: &'a Tolerances,
     pub engagement: OnceCell<EngagementData>,
+    pub dialect_assumed: bool,
+}
+impl<'a> AnalysisModel<'a> {
+    pub fn with_dialect_assumed(self, assumed: bool) -> Self;
 }
 ```
 
@@ -702,11 +708,13 @@ pub struct AnalysisRequest<'a> {
     pub config: &'a AnalysisConfig,
     pub dialect: Dialect,
     pub ruleset_version: &'a str,
+    pub dialect_assumed: bool,   // Generic assumed because none was configured
 }
 impl<'a> AnalysisRequest<'a> {
     pub fn new(file_name: &'a str, source: &'a str,
                config: &'a AnalysisConfig, dialect: Dialect) -> Self;
     pub fn with_ruleset_version(self, ruleset_version: &'a str) -> Self;
+    pub fn with_dialect_assumed(self, assumed: bool) -> Self;
 }
 
 pub struct RuleRegistry { /* ordered rules */ }

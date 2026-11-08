@@ -149,6 +149,8 @@ pub struct AnalysisModel<'a> {
     pub tolerances: &'a Tolerances,
     /// One shared engagement pass, computed at most once.
     pub engagement: OnceCell<EngagementData>,
+    /// `true` when the dialect was not configured and `Generic` was assumed.
+    pub dialect_assumed: bool,
 }
 
 impl<'a> AnalysisModel<'a> {
@@ -170,6 +172,14 @@ impl<'a> AnalysisModel<'a> {
             material,
             tolerances,
             engagement: OnceCell::new(),
+            dialect_assumed: false,
         }
+    }
+
+    /// Records whether `Generic` was assumed instead of configured.
+    #[must_use]
+    pub fn with_dialect_assumed(mut self, assumed: bool) -> Self {
+        self.dialect_assumed = assumed;
+        self
     }
 }

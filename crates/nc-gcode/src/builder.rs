@@ -158,6 +158,7 @@ impl ProgramBuilder {
             annotations: self.annotations,
             comments: Vec::new(),
             tool_hints: Vec::new(),
+            skipped_blocks: Vec::new(),
             modal_table: vec![crate::motion::ModalState::default(); modal_table_len],
             geometry_uncertain_after_line: self.geometry_uncertain_after_line,
         }
@@ -187,6 +188,7 @@ mod tests {
             .build();
         assert_eq!(program.motions.len(), 2);
         assert_eq!(program.lines.len(), 3);
+        assert!(program.skipped_blocks().is_empty());
         assert_eq!(program.segment_count(), 2);
         assert_eq!(program.motions[1].feed_mm_min, Some(100.0));
         assert!(program.cutting_bounds().min().z < 0.0);

@@ -65,7 +65,7 @@
 //! ```
 //! use nc_gcode::{ParserConfig, parse_program_lossy};
 //!
-//! let result = parse_program_lossy("G0 X1\nG1 X2\nG1 X3 F100\n", &ParserConfig::default());
+//! let result = parse_program_lossy("G0 X1\nG1 X2 Q3\nG1 X3 F100\n", &ParserConfig::default());
 //! assert_eq!(result.errors.len(), 1);
 //! assert_eq!(result.skipped_blocks[0].line, 2);
 //! // The failed block kept the previous modal state and did not stop the file.
@@ -73,7 +73,10 @@
 //! ```
 //!
 //! A failed block is recorded and skipped. Unknown words and codes are
-//! diagnostics, never fatal. Truly unsupported state-changing constructs
+//! diagnostics, never fatal. Lossy parsing keeps a cutting move whose feed is
+//! undefined with `feed_mm_min = None` and a `MissingFeed` warning; strict
+//! parsing still reports `FeedRateUndefined`. Truly unsupported state-changing
+//! constructs
 //! (`M98`/`M99`, macros, flow control) stop new geometry after their line and
 //! set [`LossyProgram::trusted_geometry_until`] and
 //! [`Program::geometry_uncertain_after_line`]. Cutter compensation (`G41`/

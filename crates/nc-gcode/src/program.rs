@@ -168,6 +168,12 @@ pub struct Program {
     pub comments: Vec<Comment>,
     /// Best-effort tool data recovered from comments.
     pub tool_hints: Vec<nc_core::ToolHint>,
+    /// Blocks the lossy parser skipped, in source order.
+    ///
+    /// Strict parsing only produces a [`Program`] when every block succeeded,
+    /// so this is empty there. [`LossyProgram`](crate::LossyProgram) exposes
+    /// the same records alongside any partial program.
+    pub skipped_blocks: Vec<crate::motion::SkippedBlock>,
     /// Interned modal states referenced by [`MotionRecord::modal`].
     pub modal_table: Vec<ModalState>,
     /// First line after which new geometry is not trusted.
@@ -268,6 +274,12 @@ impl Program {
         self.geometry_uncertain_after_line
     }
 
+    /// Blocks the lossy parser skipped, in source order.
+    #[must_use]
+    pub fn skipped_blocks(&self) -> &[crate::motion::SkippedBlock] {
+        &self.skipped_blocks
+    }
+
     /// Expands canned-cycle records into their rapid/feed/retract sub-moves.
     ///
     /// The expansion is generated on demand; the program stores one record per
@@ -322,6 +334,16 @@ impl Iterator for ExpandedMotions<'_> {
     }
 }
 
+/// Classifies a pure-Z positioning move: upward is a retract, downward is a
+/// rapid. Only upward returns may be treated as non-rapid.
+fn z_move_kind(start_z: f64, end_z: f64) -> MoveKind {
+    if end_z > start_z {
+        MoveKind::Retract
+    } else {
+        MoveKind::Rapid
+    }
+}
+
 /// Upper bound on sub-moves generated for one pecked hole.
 ///
 /// The planner already rejects programs that need more pecks; this bound keeps
@@ -355,11 +377,15 @@ fn expand_canned(
     let mut current = [x, y, start_z];
     if canned.retract_mode == crate::state::RetractMode::RPlane {
         if math::abs(current[2] - r) > 1e-9 {
-            push(MoveKind::Rapid, current, [x, y, r]);
+            push(z_move_kind(current[2], r), current, [x, y, r]);
             current = [x, y, r];
         }
     } else if math::abs(current[2] - retract_z) > 1e-9 {
-        push(MoveKind::Rapid, current, [x, y, retract_z]);
+        push(
+            z_move_kind(current[2], retract_z),
+            current,
+            [x, y, retract_z],
+        );
         current = [x, y, retract_z];
     }
 
@@ -391,12 +417,14 @@ fn expand_canned(
             crate::state::CannedCycleKind::ChipBreak | crate::state::CannedCycleKind::PeckDrill => {
                 let q = canned.peck_q_mm.unwrap_or(r - bottom);
                 let q = if q > 0.0 { q } else { r - bottom };
+                let mut depth = r;
                 let mut z = r;
                 let mut pecks = 0u64;
                 let reached = loop {
                     pecks = pecks.saturating_add(1);
-                    let next = math::clamp(z - q, bottom, r);
+                    let next = math::clamp(depth - q, bottom, r);
                     push(down_kind, [hole[0], hole[1], z], [hole[0], hole[1], next]);
+                    depth = next;
                     if next <= bottom + 1e-9 || pecks >= MAX_EXPANDED_PECKS {
                         break next;
                     }
@@ -406,18 +434,18 @@ fn expand_canned(
                         (next + q).min(r)
                     };
                     if break_z > next {
+                        // Upward returns are retracts, never rapids: a naive
+                        // clearance rule must not mistake a peck retract for a
+                        // rapid at depth. The next peck feeds from this level.
                         push(
-                            MoveKind::Rapid,
+                            MoveKind::Retract,
                             [hole[0], hole[1], next],
                             [hole[0], hole[1], break_z],
                         );
-                        push(
-                            MoveKind::Rapid,
-                            [hole[0], hole[1], break_z],
-                            [hole[0], hole[1], next],
-                        );
+                        z = break_z;
+                    } else {
+                        z = next;
                     }
-                    z = next;
                 };
                 current = [hole[0], hole[1], reached];
             }
