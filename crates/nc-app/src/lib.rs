@@ -15,6 +15,8 @@ mod file_browser;
 mod layout;
 mod program;
 mod shell;
+mod sim;
+mod sim_worker;
 mod state;
 mod theme;
 mod viewer;
@@ -49,6 +51,12 @@ pub struct LaunchOptions {
     pub view_3d: bool,
     /// Open the in-app file browser at startup (review convenience).
     pub open_browser: bool,
+    /// Start in SIMULATE.
+    pub simulate: bool,
+    /// Optional initial SIMULATE position as a fraction of the timeline.
+    pub sim_at: Option<f32>,
+    /// Start SIMULATE playback immediately (review convenience).
+    pub autoplay: bool,
 }
 
 impl Default for LaunchOptions {
@@ -61,6 +69,9 @@ impl Default for LaunchOptions {
             fullscreen: false,
             view_3d: false,
             open_browser: false,
+            simulate: false,
+            sim_at: None,
+            autoplay: false,
         }
     }
 }
@@ -70,11 +81,16 @@ impl LaunchOptions {
     ///
     /// Supported: `--size WxH` or `--size=WxH`, `--portrait`,
     /// `--light`, `--dark`, `--high-contrast`, `--fullscreen`, `--3d`,
-    /// `--browser`, and `--open PATH` or `--open=PATH`.
+    /// `--browser`, `--simulate`, `--sim-at FRACTION`, `--play`,
+    /// and `--open PATH` or `--open=PATH`.
+    ///
+    /// `--sim-at` and `--play` imply `--simulate`; the fraction is clamped to
+    /// `0.0..=1.0`.
     #[must_use]
     pub fn from_args(args: impl IntoIterator<Item = String>) -> Self {
         let args = args.into_iter().collect::<Vec<_>>();
         let (width, height) = window_size_override(&args).unwrap_or((1280.0, 800.0));
+        let sim_at = sim_at_argument(&args);
         Self {
             width,
             height,
@@ -83,6 +99,11 @@ impl LaunchOptions {
             fullscreen: args.iter().any(|arg| arg == "--fullscreen"),
             view_3d: args.iter().any(|arg| arg == "--3d"),
             open_browser: args.iter().any(|arg| arg == "--browser"),
+            simulate: args.iter().any(|arg| arg == "--simulate")
+                || sim_at.is_some()
+                || args.iter().any(|arg| arg == "--play"),
+            sim_at,
+            autoplay: args.iter().any(|arg| arg == "--play"),
         }
     }
 }
@@ -94,6 +115,9 @@ pub fn run(options: LaunchOptions) {
     let open_path = options.open_path.clone();
     let view_3d = options.view_3d;
     let open_browser = options.open_browser;
+    let simulate = options.simulate;
+    let sim_at = options.sim_at;
+    let autoplay = options.autoplay;
     let initial_theme = theme;
     application().run(move |cx| {
         gpui_kit::init(cx);
@@ -128,6 +152,9 @@ pub fn run(options: LaunchOptions) {
                     open_path.clone(),
                     view_3d,
                     open_browser,
+                    simulate,
+                    sim_at,
+                    autoplay,
                     initial_theme,
                     cx,
                 )
@@ -189,6 +216,28 @@ fn open_argument(args: &[String]) -> Option<PathBuf> {
     None
 }
 
+fn sim_at_argument(args: &[String]) -> Option<f32> {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        let raw = if arg == "--sim-at" {
+            index += 1;
+            args.get(index)?
+        } else if let Some(value) = arg.strip_prefix("--sim-at=") {
+            value
+        } else {
+            index += 1;
+            continue;
+        };
+        let fraction = raw.parse::<f32>().ok()?;
+        if !fraction.is_finite() {
+            return None;
+        }
+        return Some(fraction.clamp(0.0, 1.0));
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,10 +277,37 @@ mod tests {
     }
 
     #[test]
+    fn simulate_flags_parse_and_clamp() {
+        let options = LaunchOptions::from_args(["--simulate"].map(str::to_string));
+        assert!(options.simulate);
+        assert_eq!(options.sim_at, None);
+
+        let options = LaunchOptions::from_args(["--sim-at", "0.25"].map(str::to_string));
+        assert!(options.simulate, "--sim-at implies --simulate");
+        assert_eq!(options.sim_at, Some(0.25));
+
+        let options = LaunchOptions::from_args(["--sim-at=2.0"].map(str::to_string));
+        assert_eq!(options.sim_at, Some(1.0));
+
+        let options = LaunchOptions::from_args(["--simulate", "--3d"].map(str::to_string));
+        assert!(options.simulate && options.view_3d);
+
+        let options = LaunchOptions::from_args(["--sim-at", "wide"].map(str::to_string));
+        assert!(!options.simulate);
+        assert_eq!(options.sim_at, None);
+
+        let options = LaunchOptions::from_args(["--play"].map(str::to_string));
+        assert!(options.simulate);
+        assert!(options.autoplay);
+    }
+
+    #[test]
     fn launch_options_default_to_the_review_size() {
         let options = LaunchOptions::from_args(Vec::new());
         assert_eq!((options.width, options.height), (1280.0, 800.0));
         assert!(options.open_path.is_none());
         assert!(!options.fullscreen);
+        assert!(!options.simulate);
+        assert_eq!(options.sim_at, None);
     }
 }

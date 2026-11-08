@@ -409,15 +409,41 @@ pub fn move_style(kind: MoveKind) -> MoveStyle {
 /// motion.
 #[must_use]
 pub fn cut_depth_color(fraction: f32, palette: Palette) -> Hsla {
-    let fraction = if fraction.is_finite() {
-        fraction.clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
+    let fraction = clamp_fraction(fraction);
     let last = palette.cut_depth.len() - 1;
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let index = (fraction * last as f32).round() as usize;
     palette.cut_depth[index.min(last)]
+}
+
+/// Neutral blue-gray surface colour for the 3D cut-stock mesh.
+///
+/// The ramp runs pale blue-gray for an uncut top to a deep slate for the
+/// deepest sampled cut. Red is never used here.
+#[must_use]
+pub fn stock_depth_color(fraction: f32, palette: Palette) -> Hsla {
+    let fraction = clamp_fraction(fraction);
+    let (shallow, deep) = if palette.dark {
+        (0xb3c0c9, 0x1f3340)
+    } else {
+        (0xe3ebf0, 0x4c677a)
+    };
+    let mix = |channel: u32| -> u32 {
+        let a = (shallow >> channel) & 0xff;
+        let b = (deep >> channel) & 0xff;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let value = (a as f32 + (b as f32 - a as f32) * fraction).round() as u32;
+        value.min(0xff)
+    };
+    rgb((mix(16) << 16) | (mix(8) << 8) | mix(0)).into()
+}
+
+fn clamp_fraction(fraction: f32) -> f32 {
+    if fraction.is_finite() {
+        fraction.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
 /// Resolves a launch flag that overrides the persisted theme for one run.
@@ -471,6 +497,19 @@ mod tests {
         assert_eq!(deep, palette.cut_depth[4]);
         for color in palette.cut_depth {
             assert_ne!(color, palette.danger);
+        }
+        for palette in [Palette::dark(), Palette::light(), Palette::high_contrast()] {
+            let surface = stock_depth_color(0.5, palette);
+            assert_ne!(surface, palette.danger);
+            assert!(surface.a.is_finite());
+            assert_ne!(
+                stock_depth_color(0.0, palette),
+                stock_depth_color(1.0, palette)
+            );
+            assert_eq!(
+                stock_depth_color(f32::NAN, palette),
+                stock_depth_color(0.0, palette)
+            );
         }
     }
 

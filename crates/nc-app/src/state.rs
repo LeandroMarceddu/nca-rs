@@ -8,6 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use nc_core::{Tool, ToolTable};
 use nc_gcode::{ParseError, Program, parse_program};
 use nc_stock::{InferenceBasis, StockModel, StockSource};
 use nc_viewer::MoveKind;
@@ -24,14 +25,14 @@ const CONFIG_FILE: &str = "app.json";
 
 /// One of the two reserved application modes.
 ///
-/// Only [`AppMode::View`] is implemented in this milestone. SIMULATE keeps its
-/// top-bar slot so the later transport milestone does not reflow the shell.
+/// VIEW is the full static toolpath. SIMULATE shares the canvas and adds stock
+/// removal, a tool pose, and transport controls.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AppMode {
     /// Full static toolpath view.
     #[default]
     View,
-    /// Reserved for stock cutting and transport.
+    /// Stock cutting and transport.
     Simulate,
 }
 
@@ -48,7 +49,7 @@ impl AppMode {
     /// Whether this mode is implemented.
     #[must_use]
     pub const fn is_available(self) -> bool {
-        matches!(self, Self::View)
+        true
     }
 }
 
@@ -233,6 +234,7 @@ struct PersistedConfig {
     theme: String,
     recent: Vec<PathBuf>,
     last_dir: Option<PathBuf>,
+    tools: ToolTable,
 }
 
 impl Default for PersistedConfig {
@@ -241,6 +243,7 @@ impl Default for PersistedConfig {
             theme: ThemeMode::default().key().to_string(),
             recent: Vec::new(),
             last_dir: None,
+            tools: ToolTable::default(),
         }
     }
 }
@@ -254,6 +257,11 @@ pub struct NcaConfig {
     pub recent: RecentFiles,
     /// Last browser directory.
     pub last_dir: Option<PathBuf>,
+    /// User-entered tool data, keyed by tool number.
+    ///
+    /// Comment hints are merged over this table at simulation time; user data
+    /// always wins for a field it sets.
+    pub tools: ToolTable,
     path: Option<PathBuf>,
 }
 
@@ -263,6 +271,7 @@ impl Default for NcaConfig {
             theme: ThemeMode::default(),
             recent: RecentFiles::new(),
             last_dir: None,
+            tools: ToolTable::default(),
             path: None,
         }
     }
@@ -296,6 +305,7 @@ impl NcaConfig {
             theme: ThemeMode::from_key(&persisted.theme),
             recent: RecentFiles::from_paths(persisted.recent),
             last_dir: persisted.last_dir,
+            tools: persisted.tools,
             path: Some(path.to_path_buf()),
         }
     }
@@ -320,6 +330,7 @@ impl NcaConfig {
             theme: self.theme.key().to_string(),
             recent: self.recent.paths().to_vec(),
             last_dir: self.last_dir.clone(),
+            tools: self.tools.clone(),
         };
         let text = serde_json::to_string_pretty(&persisted)
             .map_err(|error| format!("config serialization: {error}"))?;
@@ -341,6 +352,12 @@ impl NcaConfig {
     /// Changes the theme and persists it.
     pub fn set_theme(&mut self, theme: ThemeMode) {
         self.theme = theme;
+        self.persist();
+    }
+
+    /// Inserts one user tool entry and persists the table.
+    pub fn set_tool(&mut self, tool: Tool) {
+        self.tools.insert(tool);
         self.persist();
     }
 
@@ -630,6 +647,10 @@ mod tests {
         config.recent.record(PathBuf::from("/tmp/a.nc"));
         config.recent.record(PathBuf::from("/tmp/b.nc"));
         config.last_dir = Some(PathBuf::from("/tmp"));
+        let mut tool = Tool::new(3);
+        tool.diameter_mm = Some(6.0);
+        tool.shape = nc_core::ToolShape::Flat;
+        config.tools.insert(tool);
         config.save_to(&path).expect("save");
 
         let loaded = NcaConfig::load_from(&path);
@@ -637,6 +658,10 @@ mod tests {
         assert_eq!(loaded.recent.len(), 2);
         assert_eq!(loaded.recent.paths()[0], PathBuf::from("/tmp/b.nc"));
         assert_eq!(loaded.last_dir, Some(PathBuf::from("/tmp")));
+        assert_eq!(
+            loaded.tools.get(3).and_then(|tool| tool.diameter_mm),
+            Some(6.0)
+        );
         let _ = fs::remove_file(path);
     }
 

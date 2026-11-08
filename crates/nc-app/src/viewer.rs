@@ -18,6 +18,7 @@
 //! cache: the marker is an argument to paint, not part of the key.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -32,7 +33,8 @@ use nc_viewer::{
     RenderPlan, StockBox, Toolpath, Viewport,
 };
 
-use crate::theme::{Palette, move_color};
+use crate::sim::{PathPhase, SimCanvas};
+use crate::theme::{Palette, cut_depth_color, move_color, stock_depth_color};
 
 /// Screen-space padding around the fitted toolpath, in logical pixels.
 const VIEW_PADDING_PX: f32 = 48.0;
@@ -273,6 +275,43 @@ impl ViewerHandle {
             100
         }
     }
+
+    /// Projects a world point to canvas-local screen coordinates.
+    ///
+    /// This uses the camera from the last paint. The shell uses it to place the
+    /// unknown-diameter label beside the tool without painting text in the canvas.
+    #[must_use]
+    pub fn project_pose(&self, pose_mm: [f64; 3], mode: ViewerMode) -> Option<(f32, f32)> {
+        if !pose_mm.iter().all(|value| value.is_finite()) {
+            return None;
+        }
+        let viewer = self.inner.borrow();
+        let rect = viewer.rect?;
+        let left = f32::from(rect.origin.x);
+        let top = f32::from(rect.origin.y);
+        let width = f32::from(rect.size.width);
+        let height = f32::from(rect.size.height);
+        let (x, y) = if mode.is_three_d() && viewer.mode.is_three_d() {
+            let world = Point3::new(pose_mm[0] as f32, pose_mm[1] as f32, pose_mm[2] as f32);
+            let projected = viewer.camera3d.project(world)?;
+            (left + projected.screen.x, top + projected.screen.y)
+        } else if !mode.is_three_d() && !viewer.mode.is_three_d() {
+            let world = Point2::new(pose_mm[0] as f32, pose_mm[1] as f32);
+            let screen = viewer.camera.world_to_screen(world);
+            (left + screen.x, top + screen.y)
+        } else {
+            return None;
+        };
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let local_x = x - left;
+        let local_y = y - top;
+        if local_x < -8.0 || local_y < -8.0 || local_x > width + 8.0 || local_y > height + 8.0 {
+            return None;
+        }
+        Some((local_x, local_y))
+    }
 }
 
 /// A view that owns a [`ViewerHandle`], so canvas gestures can redraw it.
@@ -296,11 +335,13 @@ pub fn view<T: HasViewer + 'static>(
     marker: Option<Point3>,
     visibility: [bool; MoveKind::ALL.len()],
     preview: bool,
+    sim: Option<SimCanvas>,
     view: Entity<T>,
 ) -> impl IntoElement {
     let canvas_element = {
         let measure = handle.clone();
         let paint_handle = handle.clone();
+        let paint_sim = sim.clone();
         canvas(
             move |bounds: Bounds<Pixels>, _, _| {
                 measure.inner.borrow_mut().rect = Some(bounds);
@@ -314,6 +355,7 @@ pub fn view<T: HasViewer + 'static>(
                     marker,
                     visibility,
                     preview,
+                    paint_sim.clone(),
                     palette,
                     window,
                 );
@@ -512,6 +554,254 @@ impl PlanKey3D {
     }
 }
 
+/// Cached SIMULATE path plan and the camera it was built for.
+#[derive(Default)]
+struct SimPlanCache {
+    key: Option<SimPlanKey2D>,
+    plan: SimPathPlan,
+}
+
+/// Identity of one SIMULATE 2D plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SimPlanKey2D {
+    program: usize,
+    segments: usize,
+    scale: u32,
+    offset_x: u32,
+    offset_y: u32,
+    width: u32,
+    height: u32,
+    air_top_z: u32,
+}
+
+impl SimPlanKey2D {
+    fn new(program: usize, segments: usize, camera: &Camera2D, air_top_z: f32) -> Self {
+        let offset = camera.offset();
+        let viewport = camera.viewport();
+        Self {
+            program,
+            segments,
+            scale: camera.scale().to_bits(),
+            offset_x: offset.x.to_bits(),
+            offset_y: offset.y.to_bits(),
+            width: viewport.width().to_bits(),
+            height: viewport.height().to_bits(),
+            air_top_z: air_top_z.to_bits(),
+        }
+    }
+}
+
+/// Cached SIMULATE 3D plan and the camera it was built for.
+#[derive(Default)]
+struct SimPlanCache3D {
+    key: Option<SimPlanKey3D>,
+    plan: SimPathPlan,
+}
+
+/// Identity of one SIMULATE 3D plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SimPlanKey3D {
+    program: usize,
+    segments: usize,
+    target_x: u32,
+    target_y: u32,
+    target_z: u32,
+    yaw: u32,
+    pitch: u32,
+    distance: u32,
+    width: u32,
+    height: u32,
+    air_top_z: u32,
+}
+
+impl SimPlanKey3D {
+    fn new(program: usize, segments: usize, camera: &Camera3D, air_top_z: f32) -> Self {
+        let target = camera.target();
+        let viewport = camera.viewport();
+        Self {
+            program,
+            segments,
+            target_x: target.x.to_bits(),
+            target_y: target.y.to_bits(),
+            target_z: target.z.to_bits(),
+            yaw: camera.yaw().to_bits(),
+            pitch: camera.pitch().to_bits(),
+            distance: camera.distance().to_bits(),
+            width: viewport.width().to_bits(),
+            height: viewport.height().to_bits(),
+            air_top_z: air_top_z.to_bits(),
+        }
+    }
+}
+
+/// One projected run of toolpath segments in the SIMULATE plan.
+///
+/// Unlike the generic [`RenderPlan`], this keeps the source segment index of
+/// every screen segment, so the current-line split happens at paint time and a
+/// pose-only or line-only update never rebuilds the plan.
+#[derive(Clone, Debug)]
+struct SimPolyline {
+    points: Vec<Point2>,
+    segments: Vec<usize>,
+    air: Vec<bool>,
+    depth: f32,
+    kind: MoveKind,
+}
+
+/// A projected toolpath for SIMULATE.
+#[derive(Clone, Debug, Default)]
+struct SimPathPlan {
+    polylines: Vec<SimPolyline>,
+}
+
+impl SimPathPlan {
+    fn from_2d(toolpath: &Toolpath, camera: &Camera2D, air_top_z: f32) -> Self {
+        let viewport = camera.viewport().bounds();
+        let center = camera.viewport().center();
+        let offset = camera.offset();
+        let scale = camera.scale();
+        let to_screen = |world: Point2| {
+            Point2::new(
+                center.x + (world.x - offset.x) * scale,
+                center.y - (world.y - offset.y) * scale,
+            )
+        };
+        let mut plan = Self::default();
+        let mut run: Option<SimRun> = None;
+        for (index, segment) in toolpath.segments().iter().enumerate() {
+            let start = to_screen(segment.start.xy());
+            let end = to_screen(segment.end.xy());
+            if !start.is_finite() || !end.is_finite() {
+                finish_sim_run(&mut plan, run.take(), Some(viewport));
+                continue;
+            }
+            let continues = run
+                .as_ref()
+                .is_some_and(|builder| builder.can_continue(segment, start));
+            if !continues {
+                finish_sim_run(&mut plan, run.take(), Some(viewport));
+                run = Some(SimRun::new(segment, start));
+            }
+            if let Some(builder) = run.as_mut() {
+                builder.push(index, segment, end, air_top_z);
+            }
+        }
+        finish_sim_run(&mut plan, run, Some(viewport));
+        plan
+    }
+
+    fn from_3d(toolpath: &Toolpath, camera: &Camera3D, air_top_z: f32) -> Self {
+        let viewport = camera.viewport().bounds();
+        let mut plan = Self::default();
+        let mut run: Option<SimRun> = None;
+        for (index, segment) in toolpath.segments().iter().enumerate() {
+            let (Some(start), Some(end)) =
+                (camera.project(segment.start), camera.project(segment.end))
+            else {
+                finish_sim_run(&mut plan, run.take(), Some(viewport));
+                continue;
+            };
+            let depth = (start.depth + end.depth) * 0.5;
+            if !depth.is_finite() {
+                finish_sim_run(&mut plan, run.take(), Some(viewport));
+                continue;
+            }
+            let continues = run
+                .as_ref()
+                .is_some_and(|builder| builder.can_continue(segment, start.screen));
+            if !continues {
+                finish_sim_run(&mut plan, run.take(), Some(viewport));
+                run = Some(SimRun::new(segment, start.screen));
+            }
+            if let Some(builder) = run.as_mut() {
+                builder.depth += depth;
+                builder.push(index, segment, end.screen, air_top_z);
+            }
+        }
+        finish_sim_run(&mut plan, run, Some(viewport));
+        plan.polylines.sort_by(|a, b| b.depth.total_cmp(&a.depth));
+        plan
+    }
+}
+
+/// Builder for one connected SIMULATE run.
+struct SimRun {
+    points: Vec<Point2>,
+    segments: Vec<usize>,
+    air: Vec<bool>,
+    depth: f32,
+    kind: MoveKind,
+    layer: u16,
+    tool: u16,
+}
+
+impl SimRun {
+    fn new(segment: &nc_viewer::Segment, start: Point2) -> Self {
+        Self {
+            points: vec![start],
+            segments: Vec::new(),
+            air: Vec::new(),
+            depth: 0.0,
+            kind: segment.kind,
+            layer: segment.layer,
+            tool: segment.tool,
+        }
+    }
+
+    fn can_continue(&self, segment: &nc_viewer::Segment, start: Point2) -> bool {
+        if self.kind != segment.kind || self.layer != segment.layer || self.tool != segment.tool {
+            return false;
+        }
+        self.points.last().is_some_and(|last| {
+            let dx = last.x - start.x;
+            let dy = last.y - start.y;
+            dx * dx + dy * dy <= 1.0e-4
+        })
+    }
+
+    fn push(&mut self, index: usize, segment: &nc_viewer::Segment, end: Point2, air_top_z: f32) {
+        self.points.push(end);
+        self.segments.push(index);
+        let mid_z = (f64::from(segment.start.z) + f64::from(segment.end.z)) * 0.5;
+        self.air
+            .push(segment.kind.is_cutting() && mid_z > f64::from(air_top_z) + 1.0e-6);
+    }
+}
+
+fn finish_sim_run(plan: &mut SimPathPlan, run: Option<SimRun>, viewport: Option<Bounds2>) {
+    let Some(run) = run else {
+        return;
+    };
+    if run.segments.is_empty() || run.points.len() < 2 {
+        return;
+    }
+    if let Some(viewport) = viewport {
+        let mut min = Point2::new(f32::INFINITY, f32::INFINITY);
+        let mut max = Point2::new(f32::NEG_INFINITY, f32::NEG_INFINITY);
+        for point in &run.points {
+            min = Point2::new(min.x.min(point.x), min.y.min(point.y));
+            max = Point2::new(max.x.max(point.x), max.y.max(point.y));
+        }
+        let cull = Bounds2::new(min, max);
+        if !cull.intersects(&viewport.expanded(8.0)) {
+            return;
+        }
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let depth = if run.segments.is_empty() {
+        0.0
+    } else {
+        run.depth / run.segments.len() as f32
+    };
+    plan.polylines.push(SimPolyline {
+        points: run.points,
+        segments: run.segments,
+        air: run.air,
+        depth,
+        kind: run.kind,
+    });
+}
+
 /// Mutable viewer state shared through [`ViewerHandle`].
 struct Viewer {
     mode: ViewerMode,
@@ -536,10 +826,16 @@ struct Viewer {
     preview: bool,
     cache: PlanCache,
     cache3d: PlanCache3D,
+    sim_cache: SimPlanCache,
+    sim_cache3d: SimPlanCache3D,
     #[cfg(test)]
     plan_builds: u32,
     #[cfg(test)]
     plan_builds_3d: u32,
+    #[cfg(test)]
+    sim_plan_builds: u32,
+    #[cfg(test)]
+    sim_plan_builds_3d: u32,
 }
 
 impl Default for Viewer {
@@ -564,10 +860,16 @@ impl Default for Viewer {
             preview: true,
             cache: PlanCache::default(),
             cache3d: PlanCache3D::default(),
+            sim_cache: SimPlanCache::default(),
+            sim_cache3d: SimPlanCache3D::default(),
             #[cfg(test)]
             plan_builds: 0,
             #[cfg(test)]
             plan_builds_3d: 0,
+            #[cfg(test)]
+            sim_plan_builds: 0,
+            #[cfg(test)]
+            sim_plan_builds_3d: 0,
         }
     }
 }
@@ -575,7 +877,16 @@ impl Default for Viewer {
 impl Viewer {
     /// Updates the cameras for the current viewport and program, then ensures
     /// the active render plan matches.
-    fn prepare(&mut self, size: Size<Pixels>, program: Option<&Arc<Program>>) -> Camera2D {
+    ///
+    /// A marker or current-line update passes the same camera and program, so
+    /// it never rebuilds a plan. SIMULATE has its own plan type because it must
+    /// keep the source segment index of every screen segment.
+    fn prepare(
+        &mut self,
+        size: Size<Pixels>,
+        program: Option<&Arc<Program>>,
+        sim: Option<&SimCanvas>,
+    ) -> Camera2D {
         let viewport = Viewport::new(f32::from(size.width), f32::from(size.height));
         let identity = program.map_or(0, |program| Arc::as_ptr(program) as usize);
         let synthetic: Arc<Toolpath>;
@@ -622,14 +933,47 @@ impl Viewer {
         }
 
         if self.mode.is_three_d() {
-            let key3d = PlanKey3D::new(identity, path.segment_count(), &self.camera3d);
-            if self.cache3d.key != Some(key3d) {
-                self.cache3d.plan =
-                    RenderPlan::from_3d(path, &self.camera3d, RenderOptions::default());
-                self.cache3d.key = Some(key3d);
+            if let Some(sim) = sim {
+                let key3d = SimPlanKey3D::new(
+                    identity,
+                    path.segment_count(),
+                    &self.camera3d,
+                    sim.stock.max.z,
+                );
+                if self.sim_cache3d.key != Some(key3d) {
+                    self.sim_cache3d.plan =
+                        SimPathPlan::from_3d(path, &self.camera3d, sim.stock.max.z);
+                    self.sim_cache3d.key = Some(key3d);
+                    #[cfg(test)]
+                    {
+                        self.sim_plan_builds_3d += 1;
+                    }
+                }
+            } else {
+                let key3d = PlanKey3D::new(identity, path.segment_count(), &self.camera3d);
+                if self.cache3d.key != Some(key3d) {
+                    self.cache3d.plan =
+                        RenderPlan::from_3d(path, &self.camera3d, RenderOptions::default());
+                    self.cache3d.key = Some(key3d);
+                    #[cfg(test)]
+                    {
+                        self.plan_builds_3d += 1;
+                    }
+                }
+            }
+        } else if let Some(sim) = sim {
+            let key = SimPlanKey2D::new(
+                identity,
+                path.segment_count(),
+                &self.camera,
+                sim.stock.max.z,
+            );
+            if self.sim_cache.key != Some(key) {
+                self.sim_cache.plan = SimPathPlan::from_2d(path, &self.camera, sim.stock.max.z);
+                self.sim_cache.key = Some(key);
                 #[cfg(test)]
                 {
-                    self.plan_builds_3d += 1;
+                    self.sim_plan_builds += 1;
                 }
             }
         } else {
@@ -656,6 +1000,7 @@ fn paint(
     marker: Option<Point3>,
     visibility: [bool; MoveKind::ALL.len()],
     preview: bool,
+    sim: Option<SimCanvas>,
     palette: Palette,
     window: &mut Window,
 ) {
@@ -667,22 +1012,40 @@ fn paint(
 
     let mut viewer = handle.inner.borrow_mut();
     viewer.preview = preview;
-    let camera = viewer.prepare(bounds.size, program.as_ref());
+    let camera = viewer.prepare(bounds.size, program.as_ref(), sim.as_ref());
+    let stock_on = viewer.stock_visible && sim.as_ref().is_none_or(|sim| sim.toggles.stock);
 
     if viewer.mode.is_three_d() {
         let camera3d = viewer.camera3d;
         paint_ground_grid_3d(&camera3d, viewer.path_bounds3, bounds, palette, window);
-        if viewer.stock_visible
-            && let Some(stock) = stock
-        {
+        if stock_on && let Some(stock) = stock {
             paint_stock_3d(&camera3d, &stock, bounds, palette, window);
+        }
+        if let Some(sim) = &sim
+            && stock_on
+        {
+            paint_heightfield_3d(&camera3d, bounds, sim, palette, window);
         }
         if !viewer.path_bounds3.is_empty() {
             paint_envelope_3d(&camera3d, viewer.path_bounds3, bounds, palette, window);
         }
-        paint_plan_3d(bounds, &viewer.cache3d.plan, visibility, palette, window);
-        if let Some(marker) = marker {
-            paint_marker_3d(&camera3d, bounds, marker, palette, window);
+        if let Some(sim) = &sim {
+            paint_sim_path(
+                bounds,
+                &viewer.sim_cache3d.plan,
+                sim,
+                visibility,
+                palette,
+                window,
+            );
+            if sim.toggles.tool {
+                paint_sim_tool_3d(&camera3d, bounds, sim, palette, window);
+            }
+        } else {
+            paint_plan_3d(bounds, &viewer.cache3d.plan, visibility, palette, window);
+            if let Some(marker) = marker {
+                paint_marker_3d(&camera3d, bounds, marker, palette, window);
+            }
         }
         return;
     }
@@ -691,9 +1054,28 @@ fn paint(
     if !viewer.path_bounds.is_empty() {
         paint_envelope(&camera, viewer.path_bounds, bounds, palette, window);
     }
-    paint_plan(bounds, &viewer.cache.plan, visibility, palette, window);
-    if let Some(marker) = marker {
-        paint_marker(&camera, bounds, marker.xy(), palette, window);
+    if let Some(sim) = &sim
+        && stock_on
+    {
+        paint_sim_stock_2d(&camera, bounds, sim, palette, window);
+    }
+    if let Some(sim) = &sim {
+        paint_sim_path(
+            bounds,
+            &viewer.sim_cache.plan,
+            sim,
+            visibility,
+            palette,
+            window,
+        );
+        if sim.toggles.tool {
+            paint_sim_tool_2d(&camera, bounds, sim, palette, window);
+        }
+    } else {
+        paint_plan(bounds, &viewer.cache.plan, visibility, palette, window);
+        if let Some(marker) = marker {
+            paint_marker(&camera, bounds, marker.xy(), palette, window);
+        }
     }
 }
 
@@ -994,6 +1376,554 @@ fn visible_stock_faces(stock: &StockBox, camera: &Camera3D) -> Vec<[usize; 4]> {
     }
     visible.sort_by(|left, right| right.1.total_cmp(&left.1));
     visible.into_iter().map(|(face, _)| face).collect()
+}
+
+/// Projects one world point to window coordinates plus camera-space depth.
+fn project_window_depth(
+    camera: &Camera3D,
+    bounds: Bounds<Pixels>,
+    world: Point3,
+) -> Option<(f32, f32, f32)> {
+    let projected = camera.project(world)?;
+    let left = f32::from(bounds.origin.x);
+    let top = f32::from(bounds.origin.y);
+    Some((
+        left + projected.screen.x,
+        top + projected.screen.y,
+        projected.depth,
+    ))
+}
+
+/// Expands a projected quad around its centroid so a per-cell fill overlaps its
+/// neighbours without the even-odd cancellation that one multi-subpath fill
+/// would produce.
+fn inflate_quad(corners: &mut [Point2; 4], amount_px: f32) {
+    if !amount_px.is_finite() || amount_px <= 0.0 {
+        return;
+    }
+    let cx = (corners[0].x + corners[1].x + corners[2].x + corners[3].x) * 0.25;
+    let cy = (corners[0].y + corners[1].y + corners[2].y + corners[3].y) * 0.25;
+    for corner in corners {
+        let dx = corner.x - cx;
+        let dy = corner.y - cy;
+        let length = (dx * dx + dy * dy).sqrt();
+        if length > 1.0e-4 {
+            corner.x += dx / length * amount_px;
+            corner.y += dy / length * amount_px;
+        }
+    }
+}
+
+/// Paints the sampled cut-stock heightfield in 3D.
+///
+/// Quads are sorted far-to-near and consecutive quads that fall in the same
+/// depth-colour bucket share one GPUI path. At the playing resolution this is
+/// 4096 quads; the paused resolution is 16384.
+fn paint_heightfield_3d(
+    camera: &Camera3D,
+    bounds: Bounds<Pixels>,
+    sim: &SimCanvas,
+    palette: Palette,
+    window: &mut Window,
+) {
+    const BUCKETS: usize = 8;
+    let mesh = &sim.mesh;
+    let resolution = mesh.resolution;
+    if resolution == 0 || mesh.heights_mm.len() < (resolution + 1) * (resolution + 1) {
+        return;
+    }
+    // The uncut top is one flat quad. Only cells below the top need their own
+    // projected heightfield patch, which keeps the surface free of tessellation
+    // seams and cuts the paint count for an untouched block to one path.
+    let stock = sim.stock;
+    let top_corners = [
+        Point3::new(stock.min.x, stock.min.y, stock.max.z),
+        Point3::new(stock.max.x, stock.min.y, stock.max.z),
+        Point3::new(stock.max.x, stock.max.y, stock.max.z),
+        Point3::new(stock.min.x, stock.max.y, stock.max.z),
+    ];
+    let mut top_screen = [Point2::ZERO; 4];
+    let mut top_valid = true;
+    for (slot, world) in top_screen.iter_mut().zip(top_corners) {
+        let Some((x, y, _)) = project_window_depth(camera, bounds, world) else {
+            top_valid = false;
+            break;
+        };
+        *slot = Point2::new(x, y);
+    }
+    if top_valid {
+        let mut top = PathBuilder::fill();
+        top.move_to(point(px(top_screen[0].x), px(top_screen[0].y)));
+        for corner in &top_screen[1..] {
+            top.line_to(point(px(corner.x), px(corner.y)));
+        }
+        top.close();
+        paint_path(top, stock_depth_color(0.0, palette), window);
+    }
+    let mut quads: Vec<(f32, [Point2; 4], usize)> = Vec::with_capacity(resolution * resolution);
+    for row in 0..resolution {
+        for col in 0..resolution {
+            let Some(h00) = mesh.height_at(col, row) else {
+                continue;
+            };
+            let Some(h10) = mesh.height_at(col + 1, row) else {
+                continue;
+            };
+            let Some(h01) = mesh.height_at(col, row + 1) else {
+                continue;
+            };
+            let Some(h11) = mesh.height_at(col + 1, row + 1) else {
+                continue;
+            };
+            let average =
+                (f64::from(h00) + f64::from(h10) + f64::from(h01) + f64::from(h11)) * 0.25;
+            if mesh.top_z_mm - average <= 1.0e-4 {
+                continue;
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let fraction = mesh.depth_fraction(average as f32);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let bucket = (fraction * (BUCKETS - 1) as f32).round() as usize;
+            let bucket = bucket.min(BUCKETS - 1);
+
+            let xy00 = mesh.vertex_xy_mm(col, row);
+            let xy10 = mesh.vertex_xy_mm(col + 1, row);
+            let xy11 = mesh.vertex_xy_mm(col + 1, row + 1);
+            let xy01 = mesh.vertex_xy_mm(col, row + 1);
+            let corners = [(xy00, h00), (xy10, h10), (xy11, h11), (xy01, h01)];
+            let mut screen = [Point2::ZERO; 4];
+            let mut depth = 0.0_f32;
+            let mut valid = true;
+            for (slot, (xy, height)) in screen.iter_mut().zip(corners) {
+                let world = Point3::new(xy[0] as f32, xy[1] as f32, height);
+                let Some((x, y, z)) = project_window_depth(camera, bounds, world) else {
+                    valid = false;
+                    break;
+                };
+                *slot = Point2::new(x, y);
+                depth += z;
+            }
+            if !valid {
+                continue;
+            }
+            quads.push((depth * 0.25, screen, bucket));
+        }
+    }
+    quads.sort_by(|left, right| right.0.total_cmp(&left.0));
+
+    // Each cut cell is its own fill path. Lower cells project slightly away
+    // from their neighbours, so batching them into one path makes the even-odd
+    // fill rule cancel the overlaps and produces a checkerboard.
+    for (_, mut corners, bucket) in quads {
+        inflate_quad(&mut corners, 0.45);
+        let mut path = PathBuilder::fill();
+        path.move_to(point(px(corners[0].x), px(corners[0].y)));
+        for corner in &corners[1..] {
+            path.line_to(point(px(corner.x), px(corner.y)));
+        }
+        path.close();
+        #[allow(clippy::cast_precision_loss)]
+        let fraction = bucket as f32 / (BUCKETS - 1) as f32;
+        paint_path(path, stock_depth_color(fraction, palette), window);
+    }
+}
+
+/// Paints the cut stock footprint and depth-shaded cells in 2D.
+fn paint_sim_stock_2d(
+    camera: &Camera2D,
+    bounds: Bounds<Pixels>,
+    sim: &SimCanvas,
+    palette: Palette,
+    window: &mut Window,
+) {
+    const BUCKETS: usize = 8;
+    let left = f32::from(bounds.origin.x);
+    let top = f32::from(bounds.origin.y);
+    let mesh = &sim.mesh;
+    let stock = sim.stock;
+    let min = camera.world_to_screen(Point2::new(stock.min.x, stock.min.y));
+    let max = camera.world_to_screen(Point2::new(stock.max.x, stock.max.y));
+    let x0 = left + min.x;
+    let x1 = left + max.x;
+    let y0 = top + max.y;
+    let y1 = top + min.y;
+    let mut panel = PathBuilder::fill();
+    panel.move_to(point(px(x0), px(y0)));
+    panel.line_to(point(px(x1), px(y0)));
+    panel.line_to(point(px(x1), px(y1)));
+    panel.line_to(point(px(x0), px(y1)));
+    panel.close();
+    paint_path(panel, stock_depth_color(0.0, palette).alpha(0.92), window);
+
+    let resolution = mesh.resolution;
+    if resolution == 0 {
+        return;
+    }
+    let mut cells: BTreeMap<usize, PathBuilder> = BTreeMap::new();
+    for row in 0..resolution {
+        for col in 0..resolution {
+            let Some(h00) = mesh.height_at(col, row) else {
+                continue;
+            };
+            let Some(h10) = mesh.height_at(col + 1, row) else {
+                continue;
+            };
+            let Some(h01) = mesh.height_at(col, row + 1) else {
+                continue;
+            };
+            let Some(h11) = mesh.height_at(col + 1, row + 1) else {
+                continue;
+            };
+            let average =
+                (f64::from(h00) + f64::from(h10) + f64::from(h01) + f64::from(h11)) * 0.25;
+            let depth = mesh.top_z_mm - average;
+            if depth <= 1.0e-6 {
+                continue;
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let fraction = mesh.depth_fraction(average as f32);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let bucket = (fraction * (BUCKETS - 1) as f32).round() as usize;
+            let bucket = bucket.min(BUCKETS - 1);
+            let xy00 = mesh.vertex_xy_mm(col, row);
+            let xy10 = mesh.vertex_xy_mm(col + 1, row);
+            let xy11 = mesh.vertex_xy_mm(col + 1, row + 1);
+            let xy01 = mesh.vertex_xy_mm(col, row + 1);
+            let p00 = camera.world_to_screen(Point2::new(xy00[0] as f32, xy00[1] as f32));
+            let p10 = camera.world_to_screen(Point2::new(xy10[0] as f32, xy10[1] as f32));
+            let p11 = camera.world_to_screen(Point2::new(xy11[0] as f32, xy11[1] as f32));
+            let p01 = camera.world_to_screen(Point2::new(xy01[0] as f32, xy01[1] as f32));
+            let cell = [
+                Point2::new(left + p00.x, top + p00.y),
+                Point2::new(left + p10.x, top + p10.y),
+                Point2::new(left + p11.x, top + p11.y),
+                Point2::new(left + p01.x, top + p01.y),
+            ];
+            let path = cells.entry(bucket).or_insert_with(PathBuilder::fill);
+            path.move_to(point(px(cell[0].x), px(cell[0].y)));
+            path.line_to(point(px(cell[1].x), px(cell[1].y)));
+            path.line_to(point(px(cell[2].x), px(cell[2].y)));
+            path.line_to(point(px(cell[3].x), px(cell[3].y)));
+            path.close();
+        }
+    }
+    for (bucket, path) in cells {
+        #[allow(clippy::cast_precision_loss)]
+        let fraction = bucket as f32 / (BUCKETS - 1) as f32;
+        paint_path(path, cut_depth_color(fraction, palette), window);
+    }
+
+    let mut outline = PathBuilder::stroke(px(1.0));
+    outline.move_to(point(px(x0), px(y0)));
+    outline.line_to(point(px(x1), px(y0)));
+    outline.line_to(point(px(x1), px(y1)));
+    outline.line_to(point(px(x0), px(y1)));
+    outline.close();
+    paint_path(outline, palette.border_strong.alpha(0.7), window);
+}
+
+fn phase_index(phase: PathPhase) -> u16 {
+    match phase {
+        PathPhase::Future => 0,
+        PathPhase::Traversed => 1,
+        PathPhase::Current => 2,
+    }
+}
+
+fn sim_key(phase: PathPhase, kind: MoveKind, air: bool) -> u16 {
+    (phase_index(phase) << 6) | (u16::from(air) << 5) | kind as u16
+}
+
+fn sim_key_style(key: u16) -> (PathPhase, MoveKind, bool) {
+    let phase = match key >> 6 {
+        0 => PathPhase::Future,
+        2 => PathPhase::Current,
+        _ => PathPhase::Traversed,
+    };
+    let air = (key >> 5) & 1 == 1;
+    let kind = MoveKind::ALL
+        .into_iter()
+        .find(|kind| *kind as u16 == key & 0x1f)
+        .unwrap_or(MoveKind::Feed);
+    (phase, kind, air)
+}
+
+fn sim_path_builder(kind: MoveKind, phase: PathPhase, air: bool) -> PathBuilder {
+    let style = kind.style();
+    let width = style.width
+        + if phase == PathPhase::Current {
+            1.0
+        } else {
+            0.0
+        };
+    let builder = PathBuilder::stroke(px(width));
+    if air {
+        return builder.dash_array(&[px(2.0), px(3.0)]);
+    }
+    match style.dash {
+        Some([on, off]) => builder.dash_array(&[px(on), px(off)]),
+        None => builder,
+    }
+}
+
+fn paint_sim_path(
+    bounds: Bounds<Pixels>,
+    plan: &SimPathPlan,
+    sim: &SimCanvas,
+    visibility: [bool; MoveKind::ALL.len()],
+    palette: Palette,
+    window: &mut Window,
+) {
+    let left = f32::from(bounds.origin.x);
+    let top = f32::from(bounds.origin.y);
+    let mut builders: BTreeMap<u16, PathBuilder> = BTreeMap::new();
+    let mut last_points: BTreeMap<u16, Point2> = BTreeMap::new();
+    let mut dots: Vec<(f32, f32, Hsla)> = Vec::new();
+
+    for polyline in &plan.polylines {
+        if !visibility[polyline.kind as usize] {
+            continue;
+        }
+        for (index, segment) in polyline.segments.iter().enumerate() {
+            let Some(start) = polyline.points.get(index).copied() else {
+                continue;
+            };
+            let Some(end) = polyline.points.get(index + 1).copied() else {
+                continue;
+            };
+            let phase = sim.segment_lines.phase(*segment, sim.snapshot.current_line);
+            if phase == PathPhase::Future && !sim.toggles.future_path {
+                continue;
+            }
+            if matches!(polyline.kind, MoveKind::Rapid | MoveKind::Retract) && !sim.toggles.rapids {
+                continue;
+            }
+            let air = polyline.air.get(index).copied().unwrap_or(false);
+            if air && !sim.toggles.air_cuts {
+                continue;
+            }
+            let key = sim_key(phase, polyline.kind, air);
+            let color = if air {
+                palette.info.alpha(match phase {
+                    PathPhase::Future => 0.2,
+                    _ => 0.5,
+                })
+            } else {
+                let color = kind_color(polyline.kind, palette);
+                match phase {
+                    PathPhase::Future => color.alpha(0.22),
+                    PathPhase::Traversed | PathPhase::Current => color,
+                }
+            };
+            let dx = end.x - start.x;
+            let dy = end.y - start.y;
+            if dx * dx + dy * dy <= 0.36 {
+                dots.push((left + end.x, top + end.y, color));
+                continue;
+            }
+            let builder = builders
+                .entry(key)
+                .or_insert_with(|| sim_path_builder(polyline.kind, phase, air));
+            let continues = last_points.get(&key).is_some_and(|last| {
+                let dx = last.x - start.x;
+                let dy = last.y - start.y;
+                dx * dx + dy * dy <= 1.0e-4
+            });
+            if !continues {
+                builder.move_to(point(px(left + start.x), px(top + start.y)));
+            }
+            builder.line_to(point(px(left + end.x), px(top + end.y)));
+            last_points.insert(key, end);
+        }
+    }
+
+    for (key, builder) in builders {
+        let (phase, kind, air) = sim_key_style(key);
+        let color = if air {
+            palette
+                .info
+                .alpha(if phase == PathPhase::Future { 0.2 } else { 0.5 })
+        } else {
+            let color = kind_color(kind, palette);
+            match phase {
+                PathPhase::Future => color.alpha(0.22),
+                PathPhase::Traversed | PathPhase::Current => color,
+            }
+        };
+        paint_path(builder, color, window);
+    }
+    for (x, y, color) in dots {
+        paint_dot(window, color, x, y, 1.8);
+    }
+}
+
+/// Paints the 2D tool circle and crosshair at the current pose.
+fn paint_sim_tool_2d(
+    camera: &Camera2D,
+    bounds: Bounds<Pixels>,
+    sim: &SimCanvas,
+    palette: Palette,
+    window: &mut Window,
+) {
+    let pose = sim.snapshot.pose_mm;
+    let Some((x, y)) = marker_screen(camera, bounds, Point2::new(pose[0] as f32, pose[1] as f32))
+    else {
+        return;
+    };
+    let radius_mm = sim
+        .cutter
+        .as_ref()
+        .map_or(0.0, nc_stock::Cutter::display_radius_mm);
+    #[allow(clippy::cast_possible_truncation)]
+    let radius_px = if radius_mm > 0.0 {
+        (radius_mm as f32 * camera.scale()).max(2.5)
+    } else {
+        4.0
+    };
+    let color = if sim.tool_assumed {
+        palette.warning
+    } else {
+        palette.accent_hover
+    };
+    let mut circle = PathBuilder::stroke(px(1.6));
+    let segments = 28;
+    for index in 0..=segments {
+        #[allow(clippy::cast_precision_loss)]
+        let angle = std::f64::consts::TAU * index as f64 / segments as f64;
+        #[allow(clippy::cast_possible_truncation)]
+        let px_x = x + radius_px * nc_core::math::cos(angle) as f32;
+        #[allow(clippy::cast_possible_truncation)]
+        let px_y = y - radius_px * nc_core::math::sin(angle) as f32;
+        if index == 0 {
+            circle.move_to(point(px(px_x), px(px_y)));
+        } else {
+            circle.line_to(point(px(px_x), px(px_y)));
+        }
+    }
+    circle.close();
+    paint_path(circle, color, window);
+
+    let mut cross = PathBuilder::stroke(px(1.0));
+    let arm = (radius_px + 8.0).max(12.0);
+    cross.move_to(point(px(x - arm), px(y)));
+    cross.line_to(point(px(x + arm), px(y)));
+    cross.move_to(point(px(x), px(y - arm)));
+    cross.line_to(point(px(x), px(y + arm)));
+    paint_path(cross, palette.text.alpha(0.8), window);
+    paint_dot(window, color, x, y, 2.2);
+}
+
+/// Paints the 3D tool cylinder, shank, and holder at the current pose.
+fn paint_sim_tool_3d(
+    camera: &Camera3D,
+    bounds: Bounds<Pixels>,
+    sim: &SimCanvas,
+    palette: Palette,
+    window: &mut Window,
+) {
+    const SEGMENTS: usize = 16;
+    let pose = sim.snapshot.pose_mm;
+    if !pose.iter().all(|value| value.is_finite()) {
+        return;
+    }
+    let cutter = sim.cutter.as_ref();
+    let radius_mm = cutter.map_or(0.0, nc_stock::Cutter::display_radius_mm);
+    let thin_mm = if radius_mm > 0.0 {
+        radius_mm
+    } else {
+        f64::from((camera.units_per_pixel() * 3.0).max(0.6))
+    };
+    let shank_mm = cutter
+        .and_then(|cutter| cutter.shank_diameter_mm)
+        .map_or(thin_mm, |diameter| (diameter * 0.5).max(thin_mm));
+    let flute_mm = cutter
+        .and_then(|cutter| cutter.flute_length_mm)
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(10.0);
+    let stickout_mm = cutter
+        .and_then(|cutter| cutter.stickout_mm)
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(flute_mm + 8.0)
+        .max(flute_mm);
+    let holder_mm = cutter
+        .and_then(|cutter| cutter.holder_diameter_mm)
+        .map_or(shank_mm * 1.5, |diameter| (diameter * 0.5).max(shank_mm));
+
+    let tip = Point3::new(pose[0] as f32, pose[1] as f32, pose[2] as f32);
+    let top = Point3::new(tip.x, tip.y, tip.z + stickout_mm as f32);
+    let color = if sim.tool_assumed {
+        palette.warning
+    } else {
+        palette.accent_hover
+    };
+
+    let ring = |z: f32, radius: f32| -> Vec<Option<(f32, f32)>> {
+        (0..=SEGMENTS)
+            .map(|index| {
+                #[allow(clippy::cast_precision_loss)]
+                let angle = std::f64::consts::TAU * index as f64 / SEGMENTS as f64;
+                #[allow(clippy::cast_possible_truncation)]
+                let x = tip.x + radius * nc_core::math::cos(angle) as f32;
+                #[allow(clippy::cast_possible_truncation)]
+                let y = tip.y + radius * nc_core::math::sin(angle) as f32;
+                project_window(camera, bounds, Point3::new(x, y, z))
+            })
+            .collect()
+    };
+    let bottom = ring(tip.z, thin_mm as f32);
+    let mid = ring(tip.z + flute_mm as f32, shank_mm as f32);
+    let holder = ring(top.z, holder_mm as f32);
+
+    let mut sides = PathBuilder::stroke(px(1.0));
+    for index in 0..SEGMENTS {
+        let (Some(bottom_a), Some(bottom_b), Some(mid_a), Some(mid_b)) = (
+            bottom.get(index).copied().flatten(),
+            bottom.get(index + 1).copied().flatten(),
+            mid.get(index).copied().flatten(),
+            mid.get(index + 1).copied().flatten(),
+        ) else {
+            continue;
+        };
+        sides.move_to(point(px(bottom_a.0), px(bottom_a.1)));
+        sides.line_to(point(px(mid_a.0), px(mid_a.1)));
+        sides.line_to(point(px(mid_b.0), px(mid_b.1)));
+        sides.line_to(point(px(bottom_b.0), px(bottom_b.1)));
+    }
+    paint_path(sides, color.alpha(0.55), window);
+
+    let mut rings = PathBuilder::stroke(px(1.2));
+    for ring in [&bottom, &mid, &holder] {
+        let mut started = false;
+        for screen in ring.iter().flatten() {
+            if !started {
+                rings.move_to(point(px(screen.0), px(screen.1)));
+                started = true;
+            } else {
+                rings.line_to(point(px(screen.0), px(screen.1)));
+            }
+        }
+    }
+    paint_path(rings, color, window);
+
+    if let Some((x, y)) = marker_screen_3d(camera, bounds, tip) {
+        let mut cross = PathBuilder::stroke(px(1.0));
+        cross.move_to(point(px(x - 7.0), px(y)));
+        cross.line_to(point(px(x + 7.0), px(y)));
+        cross.move_to(point(px(x), px(y - 7.0)));
+        cross.line_to(point(px(x), px(y + 7.0)));
+        paint_path(cross, palette.text.alpha(0.85), window);
+    }
+    if tip.z.abs() > 1.0e-3
+        && let Some((plane_x, plane_y)) =
+            project_window(camera, bounds, Point3::new(tip.x, tip.y, 0.0))
+    {
+        let mut dropline = PathBuilder::stroke(px(1.0)).dash_array(&[px(3.0), px(3.0)]);
+        if let Some((x, y)) = marker_screen_3d(camera, bounds, tip) {
+            dropline.move_to(point(px(x), px(y)));
+            dropline.line_to(point(px(plane_x), px(plane_y)));
+            paint_path(dropline, color.alpha(0.35), window);
+        }
+    }
 }
 
 /// Paints the toolpath bounds as a dashed 3D box.
@@ -1446,7 +2376,7 @@ mod tests {
         let bounds = test_bounds(800.0, 600.0);
         let camera = {
             let mut viewer = handle.inner.borrow_mut();
-            viewer.prepare(bounds.size, Some(&program))
+            viewer.prepare(bounds.size, Some(&program), None)
         };
 
         let world = program.toolpath.bounds().xy_bounds();
@@ -1467,20 +2397,64 @@ mod tests {
         let bounds = test_bounds(1000.0, 700.0);
         {
             let mut viewer = handle.inner.borrow_mut();
-            viewer.prepare(bounds.size, Some(&program));
+            viewer.prepare(bounds.size, Some(&program), None);
             assert_eq!(viewer.plan_builds, 1);
             // Every marker-only paint calls `prepare` with the same program
             // and camera; the plan key is unchanged, so no rebuild happens.
             for _ in 0..25 {
-                let _ = viewer.prepare(bounds.size, Some(&program));
+                let _ = viewer.prepare(bounds.size, Some(&program), None);
             }
             assert_eq!(viewer.plan_builds, 1);
         }
 
         let other = Arc::new(nc_gcode::parse_program("G0 X0\nG1 X5 F100\n").expect("program"));
         let mut viewer = handle.inner.borrow_mut();
-        viewer.prepare(bounds.size, Some(&other));
+        viewer.prepare(bounds.size, Some(&other), None);
         assert_eq!(viewer.plan_builds, 2);
+    }
+
+    #[test]
+    fn sim_plan_rebuild_ignores_current_line_changes() {
+        use crate::sim::{HeightfieldMesh, SegmentLines, SimCanvas, SimToggles};
+        use nc_core::ToolTable;
+        use nc_stock::StockModel;
+
+        let handle = ViewerHandle::new();
+        let program = demo();
+        let stock = StockModel::infer(&program);
+        let simulation = nc_sim::Simulation::new(
+            &program,
+            stock,
+            &ToolTable::default(),
+            &nc_sim::SimConfig::default(),
+        )
+        .expect("simulation");
+        let mesh = Arc::new(HeightfieldMesh::sample(simulation.heightmap(), &stock, 8));
+        let stock_box = stock.to_stock_box().expect("stock box");
+        let canvas = SimCanvas {
+            snapshot: simulation.snapshot(),
+            mesh,
+            stock: stock_box,
+            cutter: None,
+            segment_lines: Arc::new(SegmentLines::from_program(&program)),
+            toggles: SimToggles::default(),
+            tool_assumed: true,
+        };
+        let bounds = test_bounds(900.0, 650.0);
+        {
+            let mut viewer = handle.inner.borrow_mut();
+            let _ = viewer.prepare(bounds.size, Some(&program), Some(&canvas));
+            assert_eq!(viewer.sim_plan_builds, 1);
+            let mut moved_line = canvas.clone();
+            moved_line.snapshot.current_line = moved_line.snapshot.current_line.saturating_add(3);
+            for _ in 0..10 {
+                let _ = viewer.prepare(bounds.size, Some(&program), Some(&moved_line));
+            }
+            assert_eq!(viewer.sim_plan_builds, 1, "line changes rebuilt the plan");
+            viewer.camera.pan(Point2::new(25.0, 0.0));
+            let _ = viewer.prepare(bounds.size, Some(&program), Some(&moved_line));
+            assert_eq!(viewer.sim_plan_builds, 2, "camera change did not rebuild");
+        }
     }
 
     #[test]
@@ -1489,7 +2463,7 @@ mod tests {
         let bounds = test_bounds(800.0, 600.0);
         let mut viewer = handle.inner.borrow_mut();
         viewer.preview = false;
-        let _ = viewer.prepare(bounds.size, None);
+        let _ = viewer.prepare(bounds.size, None, None);
         assert!(viewer.cache.plan.is_empty());
         assert_eq!(viewer.plan_builds, 1);
     }
@@ -1501,12 +2475,12 @@ mod tests {
         assert!(!program.is_empty());
         let bounds = test_bounds(1280.0, 760.0);
         let mut viewer = handle.inner.borrow_mut();
-        let _ = viewer.prepare(bounds.size, Some(&program));
+        let _ = viewer.prepare(bounds.size, Some(&program), None);
         assert!(!viewer.cache.plan.is_empty());
         assert!(viewer.cache.plan.point_count() > 0);
 
         viewer.mode = ViewerMode::ThreeD;
-        let _ = viewer.prepare(bounds.size, Some(&program));
+        let _ = viewer.prepare(bounds.size, Some(&program), None);
         assert!(!viewer.cache3d.plan.is_empty());
         assert!(viewer.cache3d.plan.point_count() > 0);
     }
@@ -1518,18 +2492,18 @@ mod tests {
         let bounds = test_bounds(900.0, 600.0);
         let two_d = {
             let mut viewer = handle.inner.borrow_mut();
-            viewer.prepare(bounds.size, Some(&program))
+            viewer.prepare(bounds.size, Some(&program), None)
         };
         assert!(handle.set_mode(ViewerMode::ThreeD));
         let three_d = {
             let mut viewer = handle.inner.borrow_mut();
-            viewer.prepare(bounds.size, Some(&program));
+            viewer.prepare(bounds.size, Some(&program), None);
             viewer.camera3d
         };
         assert!(three_d.distance() > 0.0);
         let back = {
             let mut viewer = handle.inner.borrow_mut();
-            viewer.prepare(bounds.size, Some(&program))
+            viewer.prepare(bounds.size, Some(&program), None)
         };
         assert_eq!(two_d.scale(), back.scale());
         assert!(handle.set_mode(ViewerMode::Top2D));
