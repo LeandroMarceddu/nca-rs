@@ -77,6 +77,23 @@ Report: 477 retained diagnostics, `31/45` rules evaluated, per-rule caps active
 A 1M-line synthetic fixture and release UI frame-time measurements are still
 required before the performance section is final.
 
+### One-million-line synthetic
+
+Generated deterministically with `tools/gen-perf-1m.py` (19,000,055 bytes,
+1,000,000 motion lines). Bare config: no tool data, stock, machine or material,
+so the M2 engagement pass is skipped by missing inputs; the 34 M1 rules and the
+report path run.
+
+| Run | Wall time | Exit | Peak RSS |
+|---|---:|---:|---:|
+| 1 | 0.745 s | 0 | 430,656 KB (~420 MiB) |
+
+This meets the 1M-line <= 5 s target comfortably. It is above the ~250 B/motion
+memory goal (~430 B/motion all-in), because `ProgramLine` retains its source text
+and `Word` vector for every line. A 2M-motion program is projected at roughly
+860 MiB, still below the 1 GB ceiling; D030 records the miss and the optimization
+follow-up.
+
 ## Degradation policy
 
 Above a configurable input size:

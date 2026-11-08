@@ -268,3 +268,16 @@ consequence for the contract.
   app must not silently invent stock or machine data.
 - **Consequence:** The app report can differ from a CLI run that supplies a TOML
   config. The UI labels the stock source and the assumed dialect.
+
+## D030 - The per-motion memory target misses on word retention
+
+- **Decision:** Keep the 1M-line result (~430 B/motion, ~420 MiB) as the
+  documented baseline. The 250 B/motion goal is not met yet; a 2M program is
+  projected below the 1 GB ceiling.
+- **Reason:** `ProgramLine` keeps its source `String` and a `Vec<Word>` for every
+  line, which M1 source-level rules need. `MotionRecord` is still 128 bytes and
+  the display toolpath is compact; the line metadata is the overhead.
+- **Consequence:** A post-v0.1 optimization can replace per-line words with
+  bounded flags while keeping the four source-level rules working. Measure again
+  after that change; do not lower the target silently.
+

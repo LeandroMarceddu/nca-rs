@@ -51,6 +51,7 @@ project knowledge store is lost.
 | 2026-11-08 | unanchored header hints: `cargo test -p nc-gcode` | pass, 9 new tests; real file unchanged |
 | 2026-11-08 | diagnostics/coverage UI: clippy + `cargo test -p nc-app` | pass, 77 tests; 2 captures |
 | 2026-11-08 | real box54: release check, 3 runs | median 0.509 s, ~103 MiB RSS, 477 findings, 31/45 |
+| 2026-11-08 | 1M-line synthetic: release check | 0.745 s, ~420 MiB RSS; memory target miss recorded (D030) |
 | 2026-11-08 | parser corrections: clippy + `cargo test -p nc-gcode -p nc-stock -p nc-sim` | pass; real file 119,393 records, 0 errors, 336 ms |
 
 ## Accepted milestones
