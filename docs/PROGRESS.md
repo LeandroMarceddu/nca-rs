@@ -5,12 +5,15 @@ project knowledge store is lost.
 
 ## Current
 
-- Phase: **v0.5.0 release**
-- Status: feature freeze; full local gate green with 45 suites / 812 tests.
-  Stock fill (D039), AUTO dialect detection (D040), the shaped-sweep fix
-  (D041), and the release workflow are prepared.
-- Next: commit the release tree, wait for CI on the exact SHA, create the
-  signed `v0.5.0` tag, and let the release workflow publish Latest.
+- Phase: **v0.5.0 released**
+- Status: signed tag `v0.5.0` on `76d0129`; release workflow
+  `42520583813` published the Linux, Windows, and macOS archives plus
+  `SHA256SUMS.txt` as **Latest**. Full local gate green with 45 suites / 812
+  tests.
+- Next (post-0.5.0): mid-run analysis/seek progress and cancellation (D034),
+  asynchronous SIMULATE session build (D035), camera/stock-mesh measurements,
+  the dedicated fixtures in D033, and `cargo deny`/doc CI.
+- Release: <https://github.com/LeandroMarceddu/nca-rs/releases/tag/v0.5.0>
 
 ## Phase 0 checklist
 
@@ -60,7 +63,8 @@ project knowledge store is lost.
 | 2026-11-08 | Makera dialect: `cargo test -p nc-gcode -p nc-fixtures` | pass, 263 tests; LatchBase 7,550 lines, 0 skipped, 0 parse findings, 31/45 |
 | 2026-11-08 | Makera + .cnc + orbit drag: workspace fmt/clippy/test/doc + deny | pass, 44 suites, deny ok |
 | 2026-11-08 | stock fill + AUTO dialect + shaped sweep: workspace gate | pass, 45 suites / 812 tests, docs + deny clean |
-| 2026-11-08 | release scaffolding v0.5.0: workflow YAML, changelog, runbook | yaml + metadata + fmt pass; tag pending |
+| 2026-11-08 | release scaffolding v0.5.0: workflow YAML, changelog, runbook | yaml + metadata + fmt pass |
+| 2026-11-08 | v0.5.0 release: signed tag, CI 42520422295, release 42520583813 | Latest; 3 archives + SHA256SUMS; checksums verified |
 
 ## Accepted milestones
 
