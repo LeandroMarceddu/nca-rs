@@ -134,6 +134,7 @@ impl NcaShell {
         match read_program(&path) {
             Ok(file) => {
                 self.state.adopt(LoadedProgram::from_file(file));
+                self.program_scroll.scroll_to_item(0, ScrollStrategy::Top);
                 self.viewer.fit();
             }
             Err(error) => {
@@ -161,6 +162,7 @@ impl NcaShell {
                 match result {
                     Ok(loaded) => {
                         shell.state.adopt(loaded);
+                        shell.program_scroll.scroll_to_item(0, ScrollStrategy::Top);
                         shell.browser = None;
                         shell.load_error = None;
                         shell.pending_search_reset = true;
@@ -297,6 +299,7 @@ impl NcaShell {
         self.state.search.clear();
         self.program_search_input
             .update(cx, |input, cx| input.set_value("", window, cx));
+        self.program_scroll.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
     }
 

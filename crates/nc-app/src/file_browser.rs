@@ -297,6 +297,7 @@ pub fn read_program(path: &Path) -> Result<ProgramFile, ProgramFileError> {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "program".to_string());
+    let absolute = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let file = fs::File::open(path)
         .map_err(|error| ProgramFileError::Io(format!("{display}: {error}")))?;
     let mut bytes = Vec::new();
@@ -319,7 +320,7 @@ pub fn read_program(path: &Path) -> Result<ProgramFile, ProgramFileError> {
     }
     Ok(ProgramFile {
         name,
-        path: path.to_path_buf(),
+        path: absolute,
         source: text.to_string(),
     })
 }
@@ -727,6 +728,7 @@ mod tests {
         fs::write(&good, "\u{feff}G21 G90\nG0 X1\n").expect("write");
         let loaded = read_program(&good).expect("read");
         assert_eq!(loaded.name, "good.nc");
+        assert!(loaded.path.is_absolute());
         assert!(loaded.source.starts_with("G21"));
 
         let _ = fs::remove_dir_all(&dir);
