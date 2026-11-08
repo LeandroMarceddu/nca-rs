@@ -1244,7 +1244,11 @@ fn extract_tool_hints(
         .find(|(declaration_line, _)| *declaration_line < first_motion_line)
         .map(|(_, units)| *units);
 
-    let mut hints = Vec::new();
+    // Contextual hints (a tool named in the comment, or a comment tied to a
+    // tool by its line) are applied before unanchored header hints so a more
+    // specific comment wins per field even when it appears later in the file.
+    let mut anchored = Vec::new();
+    let mut unanchored = Vec::new();
     let mut warnings = Vec::new();
     for line in lines {
         for text in &line.comments {
@@ -1253,15 +1257,16 @@ fn extract_tool_hints(
             if !header && !near_tool {
                 continue;
             }
-            let target = tool_in_comment(text).or_else(|| {
-                let index = tool_lines.partition_point(|(tool_line, _)| *tool_line <= line.line);
-                index
-                    .checked_sub(1)
-                    .and_then(|index| tool_lines.get(index))
-                    .map(|(_, tool)| *tool)
-            });
-            let Some(tool) = target else {
-                continue;
+            let (tool, specific) = match tool_in_comment(text) {
+                Some(tool) => (tool, true),
+                None => {
+                    let Some((tool, same_line)) =
+                        contextual_tool(&tool_lines, line.line, first_motion_line, header)
+                    else {
+                        continue;
+                    };
+                    (tool, !header || same_line)
+                }
             };
             let declared = if header {
                 header_units
@@ -1290,14 +1295,50 @@ fn extract_tool_hints(
                 continue;
             }
             let mut hint = ToolHint::new(tool, line.line);
-            hint.name = fields.name;
+            // An unanchored header note describes an operation ("clean pocket"),
+            // not a tool name, so only an explicitly associated comment names
+            // the tool. This also keeps resolved tool inventories stable when
+            // the same fields are already user-configured.
+            hint.name = if specific { fields.name } else { None };
             hint.shape = fields.shape;
             hint.diameter_mm = fields.diameter_mm;
             hint.flutes = fields.flutes;
-            hints.push(hint);
+            if specific {
+                anchored.push(hint);
+            } else {
+                unanchored.push(hint);
+            }
         }
     }
-    (hints, warnings)
+    anchored.extend(unanchored);
+    (anchored, warnings)
+}
+
+/// Chooses the tool for a comment that does not name one.
+///
+/// In the header region (`line < first_motion_line`) the first `T` word at or
+/// after the comment wins, so an unanchored header note attaches to the first
+/// tool selected later in the header. If no later header `T` exists, the
+/// nearest preceding header `T` is used. The bool is `true` when the `T` is on
+/// the comment's own line.
+fn contextual_tool(
+    tool_lines: &[(usize, u32)],
+    line: usize,
+    first_motion_line: usize,
+    header: bool,
+) -> Option<(u32, bool)> {
+    if header
+        && let Some((tool_line, tool)) = tool_lines
+            .iter()
+            .find(|(tool_line, _)| *tool_line >= line && *tool_line < first_motion_line)
+    {
+        return Some((*tool, *tool_line == line));
+    }
+    let index = tool_lines.partition_point(|(tool_line, _)| *tool_line <= line);
+    index
+        .checked_sub(1)
+        .and_then(|index| tool_lines.get(index))
+        .map(|(_, tool)| (*tool, false))
 }
 
 /// One comment line's recognized tool fields.

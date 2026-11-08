@@ -48,6 +48,7 @@ project knowledge store is lost.
 | 2026-11-08 | M2 process: clippy + `cargo test -p nc-analysis` | pass, 46 unit + 33 process tests |
 | 2026-11-08 | full workspace gate after M2 | fmt, clippy, tests, docs pass |
 | 2026-11-08 | sim speed fix: `cargo test -p nc-sim` | 31 tests, 4x/15 fps = 32 ticks |
+| 2026-11-08 | unanchored header hints: `cargo test -p nc-gcode` | pass, 9 new tests; real file unchanged |
 | 2026-11-08 | parser corrections: clippy + `cargo test -p nc-gcode -p nc-stock -p nc-sim` | pass; real file 119,393 records, 0 errors, 336 ms |
 
 ## Accepted milestones

@@ -161,6 +161,130 @@ fn header_comments_without_a_tool_are_ignored() {
 }
 
 #[test]
+fn unanchored_header_comment_attaches_to_the_first_tool_selected_later() {
+    let program = parse_program("(clean pocket, 6 mm 2F flat)\nT1 M6\nG0 X0\n").expect("valid");
+    assert_eq!(program.tool_hints.len(), 1);
+    let hint = &program.tool_hints[0];
+    assert_eq!(hint.tool, 1);
+    assert_eq!(hint.line, 1);
+    assert!(close(hint.diameter_mm.expect("diameter"), 6.0));
+    assert_eq!(hint.flutes, Some(2));
+    assert_eq!(hint.shape, Some(ToolShape::Flat));
+
+    let resolved = ToolTable::resolve(&ToolTable::new(), &program.tool_hints);
+    let tool = resolved.get(1).expect("T1");
+    assert!(close(tool.diameter_mm.expect("diameter"), 6.0));
+    assert_eq!(tool.flutes, Some(2));
+    assert_eq!(tool.shape, ToolShape::Flat);
+}
+
+#[test]
+fn unanchored_header_comment_without_a_tool_is_dropped() {
+    let program = parse_program("(clean pocket, 6 mm 2F flat)\nG0 X0\n").expect("valid");
+    assert!(program.tool_hints.is_empty());
+}
+
+#[test]
+fn unanchored_header_comment_attaches_to_the_tool_actually_selected() {
+    let program = parse_program("(clean pocket, 6 mm 2F flat)\nT2 M6\nG0 X0\n").expect("valid");
+    assert_eq!(program.tool_hints.len(), 1);
+    assert_eq!(program.tool_hints[0].tool, 2);
+}
+
+#[test]
+fn a_tool_selected_after_the_first_motion_is_not_a_header_target() {
+    let program =
+        parse_program("(clean pocket, 6 mm 2F flat)\nG0 X0\nT1 M6\nG0 X1\n").expect("valid");
+    assert!(program.tool_hints.is_empty());
+}
+
+#[test]
+fn a_specific_tool_comment_wins_over_an_earlier_unanchored_header_hint() {
+    let program =
+        parse_program("(clean pocket, 6 mm 2F flat)\n(T1 D=3.1mm 4F ball)\nT1 M6\nG0 X0\n")
+            .expect("valid");
+    let resolved = ToolTable::resolve(&ToolTable::new(), &program.tool_hints);
+    let tool = resolved.get(1).expect("T1");
+    assert!(close(tool.diameter_mm.expect("diameter"), 3.1));
+    assert_eq!(tool.flutes, Some(4));
+    assert_eq!(tool.shape, ToolShape::Ball);
+    assert_eq!(
+        resolved.source_of(1, ToolField::Diameter),
+        Some(FieldSource::Comment { line: 2 })
+    );
+}
+
+#[test]
+fn earlier_unanchored_header_comments_win_per_field() {
+    let program =
+        parse_program("(roughing, 6 mm 2F flat)\n(finishing, 3 mm 4F ball)\nT1 M6\nG0 X0\n")
+            .expect("valid");
+    let resolved = ToolTable::resolve(&ToolTable::new(), &program.tool_hints);
+    let tool = resolved.get(1).expect("T1");
+    assert!(close(tool.diameter_mm.expect("diameter"), 6.0));
+    assert_eq!(tool.flutes, Some(2));
+    assert_eq!(tool.shape, ToolShape::Flat);
+    assert_eq!(
+        resolved.source_of(1, ToolField::Diameter),
+        Some(FieldSource::Comment { line: 1 })
+    );
+}
+
+#[test]
+fn unanchored_header_hint_uses_a_unit_declared_later_in_the_header() {
+    // D017 applies to unanchored header hints too.
+    let program = parse_program("(D=6 2F flat)\nT1 M6\nG21\nG0 X0\n").expect("valid");
+    assert_eq!(program.tool_hints.len(), 1);
+    assert!(close(
+        program.tool_hints[0].diameter_mm.expect("diameter"),
+        6.0
+    ));
+
+    // A unit after the first motion never validates the hint.
+    let late = parse_program("(D=6 2F flat)\nT1 M6\nG0 X0\nG21\nG0 X1\n").expect("valid");
+    assert!(late.tool_hints.is_empty());
+    assert!(
+        late.warnings
+            .iter()
+            .any(|warning| warning.kind == WarningKind::AmbiguousToolHint)
+    );
+}
+
+#[test]
+fn unanchored_header_hint_line_is_the_comment_line() {
+    let program = parse_program("(clean pocket, 6 mm 2F flat)\n\nT1 M6\nG0 X0\n").expect("valid");
+    assert_eq!(program.tool_hints.len(), 1);
+    assert_eq!(program.tool_hints[0].line, 1);
+}
+
+#[test]
+fn unanchored_header_hint_does_not_replace_user_configuration() {
+    let program = parse_program("(clean pocket, 6 mm 2F flat)\nT1 M6\nG0 X0\n").expect("valid");
+    let mut config = ToolTable::new();
+    let mut tool = Tool::new(1);
+    tool.diameter_mm = Some(10.0);
+    tool.sources
+        .insert(ToolField::Diameter, FieldSource::Config);
+    config.insert(tool);
+
+    let resolved = ToolTable::resolve(&config, &program.tool_hints);
+    let tool = resolved.get(1).expect("T1");
+    assert_eq!(tool.diameter_mm, Some(10.0));
+    assert_eq!(
+        resolved.source_of(1, ToolField::Diameter),
+        Some(FieldSource::Config)
+    );
+    assert_eq!(tool.flutes, Some(2));
+    assert_eq!(tool.shape, ToolShape::Flat);
+}
+
+#[test]
+fn a_name_only_header_comment_creates_no_hint() {
+    let program = parse_program("(clean pocket)\nT1 M6\nG0 X0\n").expect("valid");
+    assert!(program.tool_hints.is_empty());
+}
+
+#[test]
 fn user_configuration_wins_over_a_comment_hint() {
     let program = parse_program("T1 (D=6mm 2F flat)\nG0 X0").expect("valid");
     let mut config = ToolTable::new();

@@ -63,6 +63,12 @@ Rules:
   the modal preamble second; requiring an earlier declaration would discard
   every real header hint. A unit declared after the first motion never
   retroactively validates a header hint.
+- **Unanchored header hint:** a header comment with a dimension/shape/flute
+  count but no tool number attaches to the first `T` selected later in the
+  header region (before the first motion), falling back to the nearest preceding
+  header `T`. If no header `T` exists, the hint is dropped. A comment that names
+  a tool (`T3`) is specific and wins per field over an unanchored hint. The
+  header text is not used as a tool name.
 - Only header comments before the first motion, and comments within
   `tool_hint_window` lines (default 3) of a `T`/`M6` block, are scanned.
 - A comment may name a tool number (`T3`, `tool 3`); otherwise it attaches to the

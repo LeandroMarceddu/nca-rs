@@ -247,3 +247,13 @@ consequence for the contract.
   saturate, so 4x looked identical to 1x on heavy scenes.
 - **Consequence:** 4x reaches real 4x down to about 5 fps. Queued ticks still
   drain on later frames, and the UI work remains bounded per call.
+
+## D028 - Unanchored header hints attach to the first header tool
+
+- **Decision:** A header comment with tool data but no tool number attaches to
+  the first `T` selected later in the header region, falling back to the nearest
+  preceding header `T`. If no header tool exists, it is dropped.
+- **Reason:** Real posts write `(clean pocket, 6 mm 2F flat)` before `T1 M6`.
+  Requiring a tool number in the comment discarded usable data.
+- **Consequence:** Specific `T<n>` comments win per field; unanchored hints never
+  supply a tool name; a `T` after the first motion is never used.
