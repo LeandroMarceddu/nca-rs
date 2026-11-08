@@ -563,7 +563,10 @@ diameter.
 
 Defaults (`SimConfig::default`): cell 0.75 mm, 4,000,000 cells, rapid
 5000 mm/min, tool-change pause 2 s, crash preview off, render grid 64,
-8 ticks per advance, assumed diameter `None`.
+96 ticks per advance, assumed diameter `None`.
+
+`96` is deliberate: at 4x speed and 15 fps a frame needs 32 ticks; the old
+default of 8 made 1x and 4x hit the same cap on slow frames.
 
 `TICK_S = 1.0 / 120.0`.
 

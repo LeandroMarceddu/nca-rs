@@ -111,7 +111,7 @@ need a real stock declare `Explicit` and are skipped with reason
 | Tool-change pause | 2 s |
 | Crash preview | off |
 | Render grid | 64 |
-| Ticks per advance | 8 |
+| Ticks per advance | 96 |
 | Assumed diameter | none (centerline) |
 
 ## Determinism tests

@@ -238,3 +238,12 @@ consequence for the contract.
   migrate; future behavior changes bump the version.
 
 
+
+## D027 - The playback tick budget is 96, not 8
+
+- **Decision:** `SimConfig::max_ticks_per_advance` defaults to 96.
+- **Reason:** The app multiplies the frame delta by the transport speed. At
+  15 fps, 4x needs 32 ticks per frame; the old 8-tick cap made both 1x and 4x
+  saturate, so 4x looked identical to 1x on heavy scenes.
+- **Consequence:** 4x reaches real 4x down to about 5 fps. Queued ticks still
+  drain on later frames, and the UI work remains bounded per call.

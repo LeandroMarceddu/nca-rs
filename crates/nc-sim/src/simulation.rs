@@ -798,6 +798,22 @@ mod tests {
     }
 
     #[test]
+    fn default_budget_supports_four_times_speed_at_fifteen_fps() {
+        // 1x at 15 fps needs 8 ticks; 4x needs 32. The old default of 8 made
+        // both speeds hit the same cap, so 4x looked identical to 1x.
+        let config = SimConfig::default();
+        let mut one = Simulation::new(&linear_program(), block(), &flat_tools(2.0), &config)
+            .expect("simulation");
+        one.advance(1.0 / 15.0);
+        assert_eq!(one.snapshot().tick, 8);
+
+        let mut four = Simulation::new(&linear_program(), block(), &flat_tools(2.0), &config)
+            .expect("simulation");
+        four.advance((1.0 / 15.0) * 4.0);
+        assert_eq!(four.snapshot().tick, 32);
+    }
+
+    #[test]
     fn different_dt_sequences_reach_the_same_hash() {
         let target = 240_u64;
         let sequences: [(&[f64], usize); 5] = [

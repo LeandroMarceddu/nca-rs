@@ -37,7 +37,7 @@ impl Default for SimConfig {
             tool_change_pause_s: 2.0,
             crash_preview: false,
             render_resolution: 64,
-            max_ticks_per_advance: 8,
+            max_ticks_per_advance: 96,
             assumed_tool_diameter_mm: None,
         }
     }
