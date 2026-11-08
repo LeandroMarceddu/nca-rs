@@ -51,6 +51,9 @@ project knowledge store is lost.
   browser, settings sheet, 44 tests, screenshots (2026-11-08).
 - **Phase 1 gate** — workspace fmt, clippy `-D warnings`, and tests green
   (2026-11-08).
+- **Vertical-slice rules** — `modal.feed_missing`, `travel.machine_envelope`,
+  `clearance.rapid_at_depth` with positive/near-miss tests and coverage
+  (2026-11-08).
 
 ## Version control
 

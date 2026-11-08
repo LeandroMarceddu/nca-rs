@@ -29,6 +29,8 @@ mod report;
 mod rule;
 mod types;
 
+pub mod rules;
+
 pub use config::{AnalysisConfig, RuleConfig, RuleSettings, StockConfig, Tolerances};
 pub use engine::{AnalysisRequest, RuleRegistry, analyze};
 pub use report::{
@@ -39,6 +41,7 @@ pub use rule::{
     AnalysisModel, EngagementData, PassEngagement, Requirements, Rule, RuleOutcome,
     StockRequirement,
 };
+pub use rules::all;
 pub use types::{Basis, EvidenceValue, RuleId, Severity};
 
 /// Report schema version.

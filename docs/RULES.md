@@ -15,8 +15,12 @@ and `nca rules` are generated from it, so they cannot drift.
   records it in coverage. Disabled rules are skipped with
   `missing_input = "rule.disabled"`.
 - Missing-input keys are stable and use the form `tool.<field>:T<n>`,
-  `machine`, `material`, or `stock.explicit`.
+  `machine`, `material`, `stock.explicit`, `rule.disabled`, or
+  `feed.inverse_time`.
 - Tools are referenced by `u32` ids from `MotionRecord.tool`.
+- `clearance.rapid_at_depth` reads `thresholds["clearance_mm"]` and falls back
+  to `Tolerances::clearance_mm` when absent.
+- `travel.machine_envelope` emits one finding per violating axis on a motion.
 
 ## Default tolerances (`Tolerances`)
 
@@ -87,6 +91,10 @@ default rather than disabling a rule.
   `arc_radius_mm`; skipped while cutter compensation is active.
 - **Tool change mismatch:** a `T` block without `M6` or an `M6` without a
   selected `T`; evaluate within the same tool-change group.
+- **Feed missing:** only the first cutting motion is checked. A present but
+  non-positive feed belongs to `modal.feed_nonpositive`, not this rule. An
+  inverse-time first cut (`G93`) is skipped with `feed.inverse_time` because a
+  mm/min feed is undefined by design.
 - **Machine coordinates:** any `G53`, `G28`, `G30`, or a move whose record is
   marked as machine-coordinate by the parser.
 - **WCS change after cutting:** a `G54`-`G59.3` change whose line is after the
@@ -148,12 +156,15 @@ Common evidence keys, typed as `EvidenceValue`:
 | Key | Type | Used by |
 |---|---|---|
 | `stock_source` | Text (`inferred`/`explicit`) | every stock-dependent rule |
-| `inference_basis` | Text | stock-dependent rules on inferred stock |
+| `inference_basis` | Text (`zero_at_top`/`all_cuts_above_zero`/`no_cutting_moves`) | stock-dependent rules on inferred stock |
 | `tool` | Int | tool-dependent rules |
 | `tool_source` | Text (`config`/`comment:L<n>`) | findings that used a hint |
 | `feed_mm_min` | Float | feed rules |
 | `spindle_rpm` | Float | spindle rules |
 | `start_mm`, `end_mm` | Point3 | motion rules |
+| `axis` | Text (`x`/`y`/`z`) | `travel.machine_envelope` |
+| `value_mm`, `min_mm`, `max_mm` | Float | `travel.machine_envelope` |
+| `kind` | Text (`MoveKind::label`) | motion rules |
 | `depth_mm` | Float | depth and clearance rules |
 | `threshold` | Float | threshold rules |
 | `measured` | Float | threshold rules |
