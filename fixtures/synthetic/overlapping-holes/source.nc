@@ -1,8 +1,8 @@
 (holes 2 mm apart with a 6 mm tool)
 G21 G90 G54 G17
+T1 M6
 G0 Z5
 G0 X10 Y10
-T1 M6
 M3 S9000
 G81 Z-5 R2 F120
 X12

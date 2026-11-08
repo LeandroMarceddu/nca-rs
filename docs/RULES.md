@@ -15,8 +15,16 @@ and `nca rules` are generated from it, so they cannot drift.
   records it in coverage. Disabled rules are skipped with
   `missing_input = "rule.disabled"`.
 - Missing-input keys are stable and use the form `tool.<field>:T<n>`,
-  `machine`, `material`, `stock.explicit`, `rule.disabled`, or
-  `feed.inverse_time`.
+  `machine`, `material`, `stock`, `stock.explicit`, `rule.disabled`,
+  `machine.spindle_manual`, `machine.max_feed_mm_min`,
+  `machine.max_spindle_rpm`, `tool.data`, or `feed.inverse_time`.
+  `stock` means the stock extents are degenerate or non-finite; `stock.explicit`
+  means a rule requires user-supplied stock and the stock is inferred.
+- Rules whose `requirements()` include a tool field are `Basis::Model` when the
+  value can be comment-derived (`geometry.overlapping_holes`,
+  `geometry.arc_smaller_than_tool`, `modal.spindle_direction`). Rules that use
+  only program text, exact geometry, or explicit machine/stock configuration
+  are `Basis::Exact`.
 - Tools are referenced by `u32` ids from `MotionRecord.tool`.
 - `clearance.rapid_at_depth` reads `thresholds["clearance_mm"]` and falls back
   to `Tolerances::clearance_mm` when absent.
@@ -40,8 +48,7 @@ default rather than disabling a rule.
 |---|---|---|---|---|---|
 | `parse.unsupported` | Error | Exact | - | - | A block the lossy parser skipped; raw line in evidence |
 | `parse.dialect_assumed` | Info | Exact | - | - | No dialect configured |
-| `parse.tool_hint_ambiguous` | Info | Exact | - | - | Comment dimension with no determinable unit |
-| `modal.units_missing` | Warning | Exact | - | - | Motion before `G20`/`G21` |
+| `parse.tool_hint_ambiguous` | Info | Exact | - | - | Comment dimension with no determinable unit || `modal.units_missing` | Warning | Exact | - | - | Motion before `G20`/`G21` |
 | `modal.distance_missing` | Warning | Exact | - | - | Motion before `G90`/`G91` |
 | `modal.feed_missing` | Error | Exact | - | - | First cutting move with no feed |
 | `modal.feed_nonpositive` | Error | Exact | - | - | `F0` or negative feed |
@@ -95,8 +102,13 @@ default rather than disabling a rule.
   non-positive feed belongs to `modal.feed_nonpositive`, not this rule. An
   inverse-time first cut (`G93`) is skipped with `feed.inverse_time` because a
   mm/min feed is undefined by design.
-- **Machine coordinates:** any `G53`, `G28`, `G30`, or a move whose record is
-  marked as machine-coordinate by the parser.
+- **Spindle stopped:** `modal.spindle_stopped` is skipped when
+  `machine.spindle_manual` is true; `modal.spindle_speed_zero` is skipped for
+  the same reason because a manually started spindle has no authoritative
+  programmed speed.
+- **Machine coordinates:** `modal.machine_coords` scans source words for
+  `G53`/`G28`/`G30`. `MotionRecord` has no machine-coordinate flag, so a
+  hand-built program cannot express this without source words; see D022.
 - **WCS change after cutting:** a `G54`-`G59.3` change whose line is after the
   first cutting motion.
 - **End state:** spindle on, coolant on, or the final tool Z below safe Z.
@@ -162,10 +174,17 @@ Common evidence keys, typed as `EvidenceValue`:
 | `feed_mm_min` | Float | feed rules |
 | `spindle_rpm` | Float | spindle rules |
 | `start_mm`, `end_mm` | Point3 | motion rules |
-| `axis` | Text (`x`/`y`/`z`) | `travel.machine_envelope` |
-| `value_mm`, `min_mm`, `max_mm` | Float | `travel.machine_envelope` |
+| `axis` | Text (`X`/`Y`/`Z`) | `travel.machine_envelope`, `travel.z_below_table` |
+| `value_mm`, `min_mm`, `max_mm` | Float | `travel.machine_envelope`, `travel.z_below_table` |
 | `kind` | Text (`MoveKind::label`) | motion rules |
 | `depth_mm` | Float | depth and clearance rules |
+| `first_line`, `second_line` | Int | `geometry.duplicate_hole`, `geometry.overlapping_holes` |
+| `first_mm`, `second_mm` | Point3 | hole rules |
+| `distance_mm`, `tolerance_mm` | Float | hole rules |
+| `diameter_mm`, `tool_diameter_mm` | Float | tool-diameter rules |
+| `length_mm`, `threshold` | Float | `geometry.tiny_segment` |
+| `radius_mm`, `end_radius_mm`, `delta_mm` | Float | `geometry.arc_radius_mismatch` |
+| `shortfall_mm` | Float | `geometry.arc_smaller_than_tool` |
 | `threshold` | Float | threshold rules |
 | `measured` | Float | threshold rules |
 

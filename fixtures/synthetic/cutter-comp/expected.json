@@ -1,0 +1,66 @@
+{
+  "schema": "nca.report/1",
+  "ruleset_version": "1.0.0",
+  "input": {
+    "file_name": "source.nc",
+    "sha256": "3c7482aba064699021d71b6f94d8f6b6cfc71063cf57ffde2ccfefe43f249dd6",
+    "line_count": 15,
+    "dialect": "generic",
+    "geometry_uncertain_after": null
+  },
+  "config_digest": "bcac059cd4836cd2031c28a6f711d65f1abe5ee67fb56ba34c1e25a822bcb221",
+  "stock_source": "explicit",
+  "tool_inventory": [
+    {
+      "tool": 1,
+      "first_line": 4,
+      "motion_count": 7,
+      "fields": {
+        "diameter_mm": {
+          "value": 6.000,
+          "source": "config"
+        },
+        "flutes": {
+          "value": 2,
+          "source": "config"
+        },
+        "right_hand": {
+          "value": true,
+          "source": "config"
+        },
+        "shape": {
+          "value": "flat",
+          "source": "config"
+        }
+      }
+    }
+  ],
+  "diagnostics": [],
+  "truncated": {},
+  "coverage": {
+    "evaluated": 30,
+    "total": 34,
+    "skipped": [
+      {
+        "rule": "geometry.feed_out_of_range",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "geometry.spindle_out_of_range",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "travel.machine_envelope",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "travel.z_below_table",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      }
+    ]
+  }
+}

@@ -1,0 +1,129 @@
+{
+  "schema": "nca.report/1",
+  "ruleset_version": "1.0.0",
+  "input": {
+    "file_name": "source.nc",
+    "sha256": "a8f3c342ee127a67503ef3371adb5a642116bc1ad585b40b17d7c7928221c596",
+    "line_count": 10,
+    "dialect": "generic",
+    "geometry_uncertain_after": null
+  },
+  "config_digest": "4efee7d368bdede663f5ca5a8d712e05bee3e2835eb8c4b08854805fdb93eabd",
+  "stock_source": "explicit",
+  "tool_inventory": [
+    {
+      "tool": 1,
+      "first_line": 4,
+      "motion_count": 3,
+      "fields": {
+        "diameter_mm": {
+          "value": 6.000,
+          "source": "config"
+        },
+        "flutes": {
+          "value": 2,
+          "source": "config"
+        },
+        "shape": {
+          "value": "flat",
+          "source": "config"
+        }
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "rule": "modal.feed_missing",
+      "severity": "error",
+      "basis": "exact",
+      "line": 7,
+      "column": 0,
+      "line_end": 7,
+      "message": "first cutting motion has no feed rate",
+      "evidence": {
+        "end_mm": [
+          0.000,
+          0.000,
+          -1.000
+        ],
+        "kind": "plunge",
+        "start_mm": [
+          0.000,
+          0.000,
+          5.000
+        ],
+        "tool": 1
+      }
+    },
+    {
+      "rule": "clearance.tool_end_in_material",
+      "severity": "warning",
+      "basis": "model",
+      "line": 8,
+      "column": 0,
+      "line_end": 8,
+      "message": "program ends with the tool at Z -1.000 mm, below the stock top 0.000 mm",
+      "evidence": {
+        "depth_mm": 1.000,
+        "end_mm": [
+          20.000,
+          0.000,
+          -1.000
+        ],
+        "stock_source": "explicit",
+        "tool": 1
+      }
+    },
+    {
+      "rule": "modal.end_state",
+      "severity": "warning",
+      "basis": "model",
+      "line": 8,
+      "column": 0,
+      "line_end": 8,
+      "message": "program ends with the tool at Z -1.000 mm, below safe Z 2.000 mm",
+      "evidence": {
+        "depth_mm": 3.000,
+        "end_mm": [
+          20.000,
+          0.000,
+          -1.000
+        ],
+        "stock_source": "explicit",
+        "tool": 1
+      }
+    }
+  ],
+  "truncated": {},
+  "coverage": {
+    "evaluated": 29,
+    "total": 34,
+    "skipped": [
+      {
+        "rule": "geometry.feed_out_of_range",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "geometry.spindle_out_of_range",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "modal.spindle_direction",
+        "missing_input": "tool.right_hand:T1",
+        "reason": "tool T1 has no handedness"
+      },
+      {
+        "rule": "travel.machine_envelope",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "travel.z_below_table",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      }
+    ]
+  }
+}

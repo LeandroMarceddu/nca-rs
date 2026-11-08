@@ -1,0 +1,67 @@
+{
+  "schema": "nca.report/1",
+  "ruleset_version": "1.0.0",
+  "input": {
+    "file_name": "source.nc",
+    "sha256": "cdf67a3776c5ad2811d6fb431c225f3feb1644fd623abf503b71021678d96aff",
+    "line_count": 14,
+    "dialect": "generic",
+    "geometry_uncertain_after": null
+  },
+  "config_digest": "7e44fe9bb2372ff7769bf4647f106d9fd06649fc0423e27d3339e26166d86a4b",
+  "stock_source": "explicit",
+  "tool_inventory": [
+    {
+      "tool": 1,
+      "first_line": 4,
+      "motion_count": 8,
+      "fields": {
+        "diameter_mm": {
+          "value": 6.350,
+          "source": "config"
+        },
+        "flutes": {
+          "value": 2,
+          "source": "config"
+        },
+        "shape": {
+          "value": "flat",
+          "source": "config"
+        }
+      }
+    }
+  ],
+  "diagnostics": [],
+  "truncated": {},
+  "coverage": {
+    "evaluated": 29,
+    "total": 34,
+    "skipped": [
+      {
+        "rule": "geometry.feed_out_of_range",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "geometry.spindle_out_of_range",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "modal.spindle_direction",
+        "missing_input": "tool.right_hand:T1",
+        "reason": "tool T1 has no handedness"
+      },
+      {
+        "rule": "travel.machine_envelope",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "travel.z_below_table",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      }
+    ]
+  }
+}

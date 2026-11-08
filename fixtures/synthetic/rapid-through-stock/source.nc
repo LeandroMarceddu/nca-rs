@@ -1,8 +1,8 @@
 (rapid at depth across the stock)
 G21 G90 G54 G17
+T1 M6
 G0 Z5
 G0 X5 Y20
-T1 M6
 M3 S10000
 G1 Z-2 F100
 G1 X55 F800

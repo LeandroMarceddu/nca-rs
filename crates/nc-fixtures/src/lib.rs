@@ -16,19 +16,15 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use nc_analysis::config_file::{ConfigError, load_config};
-use nc_analysis::{
-    AnalysisRequest, Basis, Diagnostic, EvidenceValue, Report, RuleId, RuleRegistry, Severity,
-    analyze, normalize_diagnostics, rules,
-};
+use nc_analysis::{AnalysisRequest, Report, RuleRegistry, analyze, rules};
 use nc_core::ToolTable;
-use nc_gcode::{ParserConfig, SkippedBlock, parse_program_lossy};
+use nc_gcode::{ParserConfig, parse_program_lossy};
 use serde_json::Value;
 
 /// Base file names every fixture directory must contain.
@@ -87,42 +83,11 @@ impl Fixture {
             .and_then(|name| name.to_str())
             .unwrap_or("source.nc")
             .to_string();
-        let request = AnalysisRequest::new(&file_name, &self.source, &config, loaded.dialect);
+        let request = AnalysisRequest::new(&file_name, &self.source, &config, loaded.dialect)
+            .with_dialect_assumed(loaded.dialect_assumed);
         let registry = RuleRegistry::from_rules(rules::all());
-        let mut report = analyze(&lossy.program, &request, &registry);
-        add_parse_findings(&mut report, &lossy.skipped_blocks);
-        Ok(report)
+        Ok(analyze(&lossy.program, &request, &registry))
     }
-}
-
-/// Surfaces lossy parser skips as `parse.unsupported` findings.
-///
-/// `parse.unsupported` is a catalog rule that is not in the current registry,
-/// so it does not change the coverage counts. Reporting the skipped blocks
-/// keeps a fixture with unparseable source from looking clean.
-fn add_parse_findings(report: &mut Report, blocks: &[SkippedBlock]) {
-    for block in blocks {
-        let mut evidence = BTreeMap::new();
-        evidence.insert("raw".to_string(), EvidenceValue::Text(block.source.clone()));
-        evidence.insert(
-            "reason".to_string(),
-            EvidenceValue::Text(block.reason.clone()),
-        );
-        report.diagnostics.push(Diagnostic {
-            rule: RuleId::new("parse.unsupported"),
-            severity: Severity::Error,
-            basis: Basis::Exact,
-            line: block.line,
-            column: 0,
-            line_end: block.line,
-            message: format!(
-                "unsupported or unparseable block skipped ({})",
-                block.reason
-            ),
-            evidence,
-        });
-    }
-    normalize_diagnostics(&mut report.diagnostics);
 }
 
 /// Loads and runs one fixture directory.

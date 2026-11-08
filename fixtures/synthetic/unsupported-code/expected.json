@@ -1,0 +1,119 @@
+{
+  "schema": "nca.report/1",
+  "ruleset_version": "1.0.0",
+  "input": {
+    "file_name": "source.nc",
+    "sha256": "20305e5ca62264328d3b0727e15d7a6ceb973fbe13db6accf0dfa047156359f8",
+    "line_count": 13,
+    "dialect": "generic",
+    "geometry_uncertain_after": 9
+  },
+  "config_digest": "4efee7d368bdede663f5ca5a8d712e05bee3e2835eb8c4b08854805fdb93eabd",
+  "stock_source": "explicit",
+  "tool_inventory": [
+    {
+      "tool": 1,
+      "first_line": 4,
+      "motion_count": 3,
+      "fields": {
+        "diameter_mm": {
+          "value": 6.000,
+          "source": "config"
+        },
+        "flutes": {
+          "value": 2,
+          "source": "config"
+        },
+        "shape": {
+          "value": "flat",
+          "source": "config"
+        }
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "rule": "parse.unsupported",
+      "severity": "error",
+      "basis": "exact",
+      "line": 9,
+      "column": 0,
+      "line_end": 9,
+      "message": "block was skipped by the parser: unsupported_code",
+      "evidence": {
+        "raw": "M98 P1000",
+        "reason": "unsupported_code"
+      }
+    },
+    {
+      "rule": "clearance.tool_end_in_material",
+      "severity": "warning",
+      "basis": "model",
+      "line": 8,
+      "column": 0,
+      "line_end": 8,
+      "message": "program ends with the tool at Z -1.000 mm, below the stock top 0.000 mm",
+      "evidence": {
+        "depth_mm": 1.000,
+        "end_mm": [
+          10.000,
+          0.000,
+          -1.000
+        ],
+        "stock_source": "explicit",
+        "tool": 1
+      }
+    },
+    {
+      "rule": "modal.end_state",
+      "severity": "warning",
+      "basis": "model",
+      "line": 8,
+      "column": 0,
+      "line_end": 8,
+      "message": "program ends with the tool at Z -1.000 mm, below safe Z 2.000 mm",
+      "evidence": {
+        "depth_mm": 3.000,
+        "end_mm": [
+          10.000,
+          0.000,
+          -1.000
+        ],
+        "stock_source": "explicit",
+        "tool": 1
+      }
+    }
+  ],
+  "truncated": {},
+  "coverage": {
+    "evaluated": 29,
+    "total": 34,
+    "skipped": [
+      {
+        "rule": "geometry.feed_out_of_range",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "geometry.spindle_out_of_range",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "modal.spindle_direction",
+        "missing_input": "tool.right_hand:T1",
+        "reason": "tool T1 has no handedness"
+      },
+      {
+        "rule": "travel.machine_envelope",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "travel.z_below_table",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      }
+    ]
+  }
+}

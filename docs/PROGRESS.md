@@ -44,6 +44,7 @@ project knowledge store is lost.
 | 2026-11-08 | semantic rendering: viewer/gcode/app tests | pass, 70 viewer + 504 workspace |
 | 2026-11-08 | CLI/config/fixtures: clippy + tests | pass, 35+25+14+5+9+2 |
 | 2026-11-08 | GitHub CI run 42467554129 | success on all jobs |
+| 2026-11-08 | parser corrections: clippy + `cargo test -p nc-gcode -p nc-stock -p nc-sim` | pass; real file 119,393 records, 0 errors, 336 ms |
 
 ## Accepted milestones
 
@@ -68,6 +69,9 @@ project knowledge store is lost.
   (2026-11-08).
 - **CI** — Linux/macOS/Windows builds, Linux clippy/test, GUI build all green
   (run 42467554129).
+- **M1 rule catalog** — 34 rules across modal/parse/travel/clearance/geometry,
+  with positive/near-miss tests, coverage, and 13 reviewed synthetic goldens
+  (2026-11-08).
 
 ## Version control
 

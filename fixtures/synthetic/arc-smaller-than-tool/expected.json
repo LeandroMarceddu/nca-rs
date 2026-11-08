@@ -1,0 +1,85 @@
+{
+  "schema": "nca.report/1",
+  "ruleset_version": "1.0.0",
+  "input": {
+    "file_name": "source.nc",
+    "sha256": "84bcfb1b22664e6bbaa1885e7a726311cd5088563c77368f52a77639138e8e79",
+    "line_count": 13,
+    "dialect": "generic",
+    "geometry_uncertain_after": null
+  },
+  "config_digest": "a444e6a271386a3ace8ce37573bbe58ba55676d8ef328b3c185f537dbbecb005",
+  "stock_source": "explicit",
+  "tool_inventory": [
+    {
+      "tool": 1,
+      "first_line": 4,
+      "motion_count": 7,
+      "fields": {
+        "diameter_mm": {
+          "value": 6.000,
+          "source": "config"
+        },
+        "flutes": {
+          "value": 2,
+          "source": "config"
+        },
+        "shape": {
+          "value": "flat",
+          "source": "config"
+        }
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "rule": "geometry.arc_smaller_than_tool",
+      "severity": "warning",
+      "basis": "model",
+      "line": 9,
+      "column": 0,
+      "line_end": 9,
+      "message": "arc radius 2.000 mm is smaller than the 3.000 mm radius of tool T1",
+      "evidence": {
+        "kind": "arc ccw",
+        "radius_mm": 2.000,
+        "shortfall_mm": 1.000,
+        "threshold": 0.050,
+        "tool": 1,
+        "tool_diameter_mm": 6.000
+      }
+    }
+  ],
+  "truncated": {},
+  "coverage": {
+    "evaluated": 29,
+    "total": 34,
+    "skipped": [
+      {
+        "rule": "geometry.feed_out_of_range",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "geometry.spindle_out_of_range",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "modal.spindle_direction",
+        "missing_input": "tool.right_hand:T1",
+        "reason": "tool T1 has no handedness"
+      },
+      {
+        "rule": "travel.machine_envelope",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "travel.z_below_table",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      }
+    ]
+  }
+}

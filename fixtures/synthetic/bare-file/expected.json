@@ -1,0 +1,205 @@
+{
+  "schema": "nca.report/1",
+  "ruleset_version": "1.0.0",
+  "input": {
+    "file_name": "source.nc",
+    "sha256": "e66db04daed6767a563893857ce843eda37e38532c93efe7eaa0f2fac182a14c",
+    "line_count": 10,
+    "dialect": "generic",
+    "geometry_uncertain_after": null
+  },
+  "config_digest": "145a2a07a172764f695d7ed409e96c903acdf70c62387ce4f8b2ed7db83e668d",
+  "stock_source": "inferred",
+  "tool_inventory": [
+    {
+      "tool": 0,
+      "first_line": 2,
+      "motion_count": 7,
+      "fields": {}
+    }
+  ],
+  "diagnostics": [
+    {
+      "rule": "modal.spindle_stopped",
+      "severity": "error",
+      "basis": "exact",
+      "line": 4,
+      "column": 0,
+      "line_end": 4,
+      "message": "cutting motion runs without the spindle commanded on",
+      "evidence": {
+        "kind": "plunge",
+        "tool": 0
+      }
+    },
+    {
+      "rule": "modal.spindle_stopped",
+      "severity": "error",
+      "basis": "exact",
+      "line": 5,
+      "column": 0,
+      "line_end": 5,
+      "message": "cutting motion runs without the spindle commanded on",
+      "evidence": {
+        "kind": "feed",
+        "tool": 0
+      }
+    },
+    {
+      "rule": "modal.spindle_stopped",
+      "severity": "error",
+      "basis": "exact",
+      "line": 6,
+      "column": 0,
+      "line_end": 6,
+      "message": "cutting motion runs without the spindle commanded on",
+      "evidence": {
+        "kind": "feed",
+        "tool": 0
+      }
+    },
+    {
+      "rule": "modal.spindle_stopped",
+      "severity": "error",
+      "basis": "exact",
+      "line": 7,
+      "column": 0,
+      "line_end": 7,
+      "message": "cutting motion runs without the spindle commanded on",
+      "evidence": {
+        "kind": "feed",
+        "tool": 0
+      }
+    },
+    {
+      "rule": "modal.spindle_stopped",
+      "severity": "error",
+      "basis": "exact",
+      "line": 8,
+      "column": 0,
+      "line_end": 8,
+      "message": "cutting motion runs without the spindle commanded on",
+      "evidence": {
+        "kind": "feed",
+        "tool": 0
+      }
+    },
+    {
+      "rule": "modal.tool_zero",
+      "severity": "warning",
+      "basis": "exact",
+      "line": 4,
+      "column": 0,
+      "line_end": 4,
+      "message": "cutting motion uses T0; no tool is selected",
+      "evidence": {
+        "kind": "plunge",
+        "tool": 0
+      }
+    },
+    {
+      "rule": "modal.tool_zero",
+      "severity": "warning",
+      "basis": "exact",
+      "line": 5,
+      "column": 0,
+      "line_end": 5,
+      "message": "cutting motion uses T0; no tool is selected",
+      "evidence": {
+        "kind": "feed",
+        "tool": 0
+      }
+    },
+    {
+      "rule": "modal.tool_zero",
+      "severity": "warning",
+      "basis": "exact",
+      "line": 6,
+      "column": 0,
+      "line_end": 6,
+      "message": "cutting motion uses T0; no tool is selected",
+      "evidence": {
+        "kind": "feed",
+        "tool": 0
+      }
+    },
+    {
+      "rule": "modal.tool_zero",
+      "severity": "warning",
+      "basis": "exact",
+      "line": 7,
+      "column": 0,
+      "line_end": 7,
+      "message": "cutting motion uses T0; no tool is selected",
+      "evidence": {
+        "kind": "feed",
+        "tool": 0
+      }
+    },
+    {
+      "rule": "modal.tool_zero",
+      "severity": "warning",
+      "basis": "exact",
+      "line": 8,
+      "column": 0,
+      "line_end": 8,
+      "message": "cutting motion uses T0; no tool is selected",
+      "evidence": {
+        "kind": "feed",
+        "tool": 0
+      }
+    }
+  ],
+  "truncated": {},
+  "coverage": {
+    "evaluated": 25,
+    "total": 34,
+    "skipped": [
+      {
+        "rule": "geometry.arc_smaller_than_tool",
+        "missing_input": "tool.diameter:T0",
+        "reason": "tool T0 has no diameter"
+      },
+      {
+        "rule": "geometry.feed_out_of_range",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "geometry.overlapping_holes",
+        "missing_input": "tool.diameter:T0",
+        "reason": "tool T0 has no diameter"
+      },
+      {
+        "rule": "geometry.spindle_out_of_range",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "modal.spindle_direction",
+        "missing_input": "tool.right_hand:T0",
+        "reason": "tool T0 has no handedness"
+      },
+      {
+        "rule": "modal.tool_unknown",
+        "missing_input": "tool.data",
+        "reason": "no tool data"
+      },
+      {
+        "rule": "travel.machine_envelope",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "travel.stock_bounds",
+        "missing_input": "stock.explicit",
+        "reason": "explicit stock is required, but the stock was inferred"
+      },
+      {
+        "rule": "travel.z_below_table",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      }
+    ]
+  }
+}

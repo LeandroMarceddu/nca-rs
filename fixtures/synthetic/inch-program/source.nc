@@ -1,8 +1,8 @@
 (inch program, 1/4 inch flat)
 G20 G90 G54 G17
+T1 M6
 G0 Z0.2
 G0 X0.25 Y0.25
-T1 M6
 M3 S12000
 G1 Z-0.05 F6
 G1 X1.25 F30

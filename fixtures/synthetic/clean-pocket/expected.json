@@ -1,0 +1,57 @@
+{
+  "schema": "nca.report/1",
+  "ruleset_version": "1.0.0",
+  "input": {
+    "file_name": "source.nc",
+    "sha256": "6fdcca2bf680e5664e3e9458920939045f3de4f01611b2c6409c9c5408b8becb",
+    "line_count": 19,
+    "dialect": "generic",
+    "geometry_uncertain_after": null
+  },
+  "config_digest": "62f962c446db13d0b025702c686f19dcbe339655ee5e8bc563fd26bbd6817d62",
+  "stock_source": "explicit",
+  "tool_inventory": [
+    {
+      "tool": 1,
+      "first_line": 4,
+      "motion_count": 13,
+      "fields": {
+        "diameter_mm": {
+          "value": 6.000,
+          "source": "config"
+        },
+        "flute_length_mm": {
+          "value": 18.000,
+          "source": "config"
+        },
+        "flutes": {
+          "value": 2,
+          "source": "config"
+        },
+        "name": {
+          "value": "6 mm 2F flat",
+          "source": "config"
+        },
+        "right_hand": {
+          "value": true,
+          "source": "config"
+        },
+        "shape": {
+          "value": "flat",
+          "source": "config"
+        },
+        "stickout_mm": {
+          "value": 30.000,
+          "source": "config"
+        }
+      }
+    }
+  ],
+  "diagnostics": [],
+  "truncated": {},
+  "coverage": {
+    "evaluated": 34,
+    "total": 34,
+    "skipped": []
+  }
+}

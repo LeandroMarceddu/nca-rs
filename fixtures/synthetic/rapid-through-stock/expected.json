@@ -1,0 +1,132 @@
+{
+  "schema": "nca.report/1",
+  "ruleset_version": "1.0.0",
+  "input": {
+    "file_name": "source.nc",
+    "sha256": "cdd93026633d878067bba47a9f313ca5d4a3649c0a91b1914513565eef6e99ae",
+    "line_count": 15,
+    "dialect": "generic",
+    "geometry_uncertain_after": null
+  },
+  "config_digest": "3ef178330048c77aea5b144b1675b548bcb416c20d2bffd76454b7e8beafb93b",
+  "stock_source": "explicit",
+  "tool_inventory": [
+    {
+      "tool": 1,
+      "first_line": 4,
+      "motion_count": 9,
+      "fields": {
+        "diameter_mm": {
+          "value": 6.000,
+          "source": "config"
+        },
+        "flutes": {
+          "value": 2,
+          "source": "config"
+        },
+        "shape": {
+          "value": "flat",
+          "source": "config"
+        }
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "rule": "clearance.rapid_at_depth",
+      "severity": "warning",
+      "basis": "model",
+      "line": 11,
+      "column": 0,
+      "line_end": 11,
+      "message": "rapid ends at Z -1.500 mm, below safe Z 2.000 mm",
+      "evidence": {
+        "depth_mm": 3.500,
+        "end_mm": [
+          5.000,
+          20.000,
+          -1.500
+        ],
+        "stock_source": "explicit",
+        "threshold": 2.000,
+        "tool": 1
+      }
+    },
+    {
+      "rule": "clearance.rapid_at_depth",
+      "severity": "warning",
+      "basis": "model",
+      "line": 12,
+      "column": 0,
+      "line_end": 12,
+      "message": "rapid ends at Z -1.500 mm, below safe Z 2.000 mm",
+      "evidence": {
+        "depth_mm": 3.500,
+        "end_mm": [
+          55.000,
+          20.000,
+          -1.500
+        ],
+        "stock_source": "explicit",
+        "threshold": 2.000,
+        "tool": 1
+      }
+    },
+    {
+      "rule": "clearance.rapid_through_stock",
+      "severity": "warning",
+      "basis": "model",
+      "line": 12,
+      "column": 0,
+      "line_end": 12,
+      "message": "rapid crosses the stock footprint at Z -1.500 mm, below the stock top 0.000 mm",
+      "evidence": {
+        "depth_mm": 1.500,
+        "end_mm": [
+          55.000,
+          20.000,
+          -1.500
+        ],
+        "start_mm": [
+          5.000,
+          20.000,
+          -1.500
+        ],
+        "stock_source": "explicit",
+        "tool": 1
+      }
+    }
+  ],
+  "truncated": {},
+  "coverage": {
+    "evaluated": 29,
+    "total": 34,
+    "skipped": [
+      {
+        "rule": "geometry.feed_out_of_range",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "geometry.spindle_out_of_range",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "modal.spindle_direction",
+        "missing_input": "tool.right_hand:T1",
+        "reason": "tool T1 has no handedness"
+      },
+      {
+        "rule": "travel.machine_envelope",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "travel.z_below_table",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      }
+    ]
+  }
+}

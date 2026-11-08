@@ -1,0 +1,67 @@
+{
+  "schema": "nca.report/1",
+  "ruleset_version": "1.0.0",
+  "input": {
+    "file_name": "source.nc",
+    "sha256": "68221c6f96eb61c12be2ab8c6aa3c4b9fcfc475c3e2ded243e4b9cb52cdfbc1b",
+    "line_count": 12,
+    "dialect": "generic",
+    "geometry_uncertain_after": null
+  },
+  "config_digest": "6ee63cc0e1ba0aec3b87c5e80e019bff9b4db1201ad4ec4619c2c5a91cbc56a9",
+  "stock_source": "explicit",
+  "tool_inventory": [
+    {
+      "tool": 1,
+      "first_line": 4,
+      "motion_count": 8,
+      "fields": {
+        "diameter_mm": {
+          "value": 6.000,
+          "source": "config"
+        },
+        "flutes": {
+          "value": 2,
+          "source": "config"
+        },
+        "shape": {
+          "value": "flat",
+          "source": "config"
+        }
+      }
+    }
+  ],
+  "diagnostics": [],
+  "truncated": {},
+  "coverage": {
+    "evaluated": 29,
+    "total": 34,
+    "skipped": [
+      {
+        "rule": "geometry.feed_out_of_range",
+        "missing_input": "machine.max_feed_mm_min",
+        "reason": "machine has no maximum feed rate configured"
+      },
+      {
+        "rule": "geometry.spindle_out_of_range",
+        "missing_input": "machine.max_spindle_rpm",
+        "reason": "machine has no maximum spindle speed configured"
+      },
+      {
+        "rule": "modal.spindle_direction",
+        "missing_input": "tool.right_hand:T1",
+        "reason": "tool T1 has no handedness"
+      },
+      {
+        "rule": "modal.spindle_speed_zero",
+        "missing_input": "machine.spindle_manual",
+        "reason": "the spindle is started manually; a programmed S0 is not authoritative"
+      },
+      {
+        "rule": "modal.spindle_stopped",
+        "missing_input": "machine.spindle_manual",
+        "reason": "the spindle is started manually; programmed spindle state is not authoritative"
+      }
+    ]
+  }
+}

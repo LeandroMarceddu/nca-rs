@@ -1,8 +1,8 @@
 (internal arc radius 1.5 mm with a 6 mm cutter)
 G21 G90 G54 G17
+T1 M6
 G0 Z5
 G0 X10 Y10
-T1 M6
 M3 S12000
 G1 Z-1 F150
 G1 X30 F800

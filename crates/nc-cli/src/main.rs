@@ -20,7 +20,6 @@
 mod png_export;
 mod render;
 
-use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -28,11 +27,11 @@ use std::process::{Command, ExitCode};
 
 use nc_analysis::config_file::{ConfigError, LoadedConfig, load_config};
 use nc_analysis::{
-    AnalysisRequest, Basis, Diagnostic, EvidenceValue, REPORT_SCHEMA, RULESET_VERSION, Report,
-    RuleId, RuleRegistry, Severity, StockRequirement, analyze, normalize_diagnostics, rules,
+    AnalysisRequest, REPORT_SCHEMA, RULESET_VERSION, RuleRegistry, Severity, StockRequirement,
+    analyze, rules,
 };
 use nc_core::ToolTable;
-use nc_gcode::{ParserConfig, Program, SkippedBlock, parse_program_lossy};
+use nc_gcode::{ParserConfig, Program, parse_program_lossy};
 use nc_sim::{SimConfig, SimError, Simulation};
 use nc_stock::{StockError, StockModel};
 
@@ -97,8 +96,14 @@ fn command_check(args: &[String]) -> Result<ExitCode, CliError> {
     let resolved = ToolTable::resolve(&config.tools, &lossy.program.tool_hints);
     config.tools = resolved;
 
-    let mut report = analyze_program(&args.file, &source, &lossy.program, &config, loaded.dialect);
-    add_parse_findings(&mut report, &lossy.skipped_blocks);
+    let report = analyze_program(
+        &args.file,
+        &source,
+        &lossy.program,
+        &config,
+        loaded.dialect,
+        loaded.dialect_assumed,
+    );
     let summary = Summary {
         report: &report,
         record_count: lossy.program.motions.len(),
@@ -286,10 +291,6 @@ fn command_rules(args: &[String]) -> Result<ExitCode, CliError> {
             row.id, row.severity, row.basis, row.stock, row.machine, row.material, row.tool_fields
         ));
     }
-    out.push_str(
-        "\nnote: lossy parser skips are reported as `parse.unsupported` findings\n\
-         outside the rule registry; they are not included in the coverage counts.\n",
-    );
     write_stdout(&out)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -300,42 +301,13 @@ fn analyze_program(
     program: &Program,
     config: &nc_analysis::AnalysisConfig,
     dialect: nc_core::Dialect,
+    dialect_assumed: bool,
 ) -> nc_analysis::Report {
     let name = file_name(path);
-    let request = AnalysisRequest::new(&name, source, config, dialect);
+    let request =
+        AnalysisRequest::new(&name, source, config, dialect).with_dialect_assumed(dialect_assumed);
     let registry = RuleRegistry::from_rules(rules::all());
     analyze(program, &request, &registry)
-}
-
-/// Surfaces lossy parser skips as the reserved `parse.unsupported` rule.
-///
-/// The rule is not in the current registry yet, so it does not change the
-/// coverage counts; each skipped source block becomes one error diagnostic
-/// with the raw line in evidence. This keeps a file the parser could not fully
-/// understand out of the "clean" exit code.
-fn add_parse_findings(report: &mut Report, blocks: &[SkippedBlock]) {
-    for block in blocks {
-        let mut evidence = BTreeMap::new();
-        evidence.insert("raw".to_string(), EvidenceValue::Text(block.source.clone()));
-        evidence.insert(
-            "reason".to_string(),
-            EvidenceValue::Text(block.reason.clone()),
-        );
-        report.diagnostics.push(Diagnostic {
-            rule: RuleId::new("parse.unsupported"),
-            severity: Severity::Error,
-            basis: Basis::Exact,
-            line: block.line,
-            column: 0,
-            line_end: block.line,
-            message: format!(
-                "unsupported or unparseable block skipped ({})",
-                block.reason
-            ),
-            evidence,
-        });
-    }
-    normalize_diagnostics(&mut report.diagnostics);
 }
 
 fn effective_config(path: Option<&Path>) -> Result<LoadedConfig, CliError> {

@@ -1,0 +1,94 @@
+{
+  "schema": "nca.report/1",
+  "ruleset_version": "1.0.0",
+  "input": {
+    "file_name": "source.nc",
+    "sha256": "4607b7af3f3a131456aa54a6d5f937c77284e7ce991dee2aa4101e3a49974b22",
+    "line_count": 16,
+    "dialect": "generic",
+    "geometry_uncertain_after": null
+  },
+  "config_digest": "56c89902c3728fe4271e7654b60255716c037e58a73a7064213eb2b3f257d869",
+  "stock_source": "explicit",
+  "tool_inventory": [
+    {
+      "tool": 1,
+      "first_line": 4,
+      "motion_count": 7,
+      "fields": {
+        "diameter_mm": {
+          "value": 6.000,
+          "source": "config"
+        },
+        "flutes": {
+          "value": 2,
+          "source": "config"
+        },
+        "shape": {
+          "value": "drill",
+          "source": "config"
+        }
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "rule": "geometry.overlapping_holes",
+      "severity": "warning",
+      "basis": "model",
+      "line": 8,
+      "column": 0,
+      "line_end": 8,
+      "message": "hole at line 8 is 2.000 mm from the hole at line 7 with tool T1, closer than its 6.000 mm diameter",
+      "evidence": {
+        "diameter_mm": 6.000,
+        "distance_mm": 2.000,
+        "first_line": 7,
+        "first_mm": [
+          10.000,
+          10.000,
+          -5.000
+        ],
+        "second_line": 8,
+        "second_mm": [
+          12.000,
+          10.000,
+          -5.000
+        ],
+        "tool": 1
+      }
+    }
+  ],
+  "truncated": {},
+  "coverage": {
+    "evaluated": 29,
+    "total": 34,
+    "skipped": [
+      {
+        "rule": "geometry.feed_out_of_range",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "geometry.spindle_out_of_range",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "modal.spindle_direction",
+        "missing_input": "tool.right_hand:T1",
+        "reason": "tool T1 has no handedness"
+      },
+      {
+        "rule": "travel.machine_envelope",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      },
+      {
+        "rule": "travel.z_below_table",
+        "missing_input": "machine",
+        "reason": "machine limits are required"
+      }
+    ]
+  }
+}

@@ -176,4 +176,44 @@ consequence for the contract.
 - **Consequence:** CI no longer enforces the license policy. Run the local
   command before releases; the allow-list remains permissive-only.
 
+## D021 - Tool-dependent rules are `Basis::Model`
+
+- **Decision:** `geometry.overlapping_holes`, `geometry.arc_smaller_than_tool`,
+  and `modal.spindle_direction` are `Basis::Model` because their required tool
+  fields may come from a comment hint. Rules that use only program text, exact
+  geometry, or explicit machine/stock configuration stay `Basis::Exact`.
+- **Reason:** `SPEC.md` says findings that used comment-derived tool data are
+  model findings, but `Rule::basis()` is per rule. A conservative static model
+  basis is the honest choice.
+- **Consequence:** The docs/RULES.md table is the reference; a future
+  per-finding basis would allow these rules to be exact for user-entered tools.
+
+## D022 - Machine-coordinate moves are detected from source words
+
+- **Decision:** `modal.machine_coords` scans `ProgramLine.words` for
+  `G53`/`G28`/`G30` because `MotionRecord` has no machine-coordinate flag.
+- **Reason:** The parser emits these commands on their source lines, so the
+  scan is complete for parsed programs. Adding a flag would grow the 128-byte
+  record for a rare case.
+- **Consequence:** A hand-built `Program` without words cannot express a
+  machine-coordinate move; document the limitation and revisit if a consumer
+  needs it.
+
+## D023 - `parse.unsupported` is a real registry rule
+
+- **Decision:** `Program` stores `skipped_blocks`, and `parse.unsupported`
+  consumes them as a registry rule. The CLI and fixture loader no longer
+  synthesize a second diagnostic.
+- **Reason:** Coverage must include every rule, and duplicating the finding
+  outside coverage was dishonest.
+- **Consequence:** The rule participates in `nca rules`, coverage totals, caps,
+  and determinism exactly like every other rule.
+
+## D024 - Spindle-speed checks skip a manual spindle
+
+- **Decision:** `modal.spindle_speed_zero` skips with
+  `machine.spindle_manual` when the spindle is started by hand, matching
+  `modal.spindle_stopped` and `SPEC.md`.
+- **Reason:** A manual spindle has no authoritative programmed speed.
+
 

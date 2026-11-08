@@ -1,8 +1,9 @@
 # unsupported-code
 
-`G41` is recognized but not applied. Per D006 it is a supported modal state,
-so it does not truncate geometry and `geometry_uncertain_after` stays null.
+`M98 P1000` is a subprogram call. v1 does not execute subprograms or flow
+control, so the lossy parser records the block and stops new geometry at that
+line. Expected: a `parse.unsupported` error and `geometry_uncertain_after` set
+to the M98 line; geometry rules must not evaluate past it.
 
-Golden draft: the cutter-compensation rule and `parse.unsupported` are not in
-the current registry, so the draft has no diagnostics. It still proves that
-`G41` is accepted without stopping or changing the centerline geometry.
+G41/G42 is a different case: see `cutter-comp`. It keeps the programmed
+centerline and does not truncate.
