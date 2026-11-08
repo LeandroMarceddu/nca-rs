@@ -3,7 +3,7 @@
 use std::cell::OnceCell;
 
 use nc_core::{MachineConfig, MaterialPreset, ToolField, ToolTable};
-use nc_gcode::Program;
+use nc_gcode::{MoveKind, Program};
 use nc_stock::{Heightmap, StockModel};
 
 use crate::config::{RuleSettings, Tolerances};
@@ -112,6 +112,8 @@ pub struct PassEngagement {
     pub motion_index: usize,
     /// Source line.
     pub line: usize,
+    /// Semantic kind of the cutting motion.
+    pub kind: MoveKind,
     /// Axial depth of cut in millimetres.
     pub axial_doc_mm: f64,
     /// Estimated radial depth of cut in millimetres.

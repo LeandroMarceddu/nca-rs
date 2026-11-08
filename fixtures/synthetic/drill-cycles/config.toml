@@ -11,3 +11,11 @@ shape = "drill"
 diameter_mm = 4.0
 flutes = 2
 tip_angle_deg = 118.0
+
+[rules."process.radial_engagement"]
+# These focused fixtures accept full-width slotting.
+radial_engagement_ratio = 1.0
+
+[rules."process.axial_depth"]
+# Deep drilling is intentional in this focused fixture.
+axial_doc_ratio = 2.0

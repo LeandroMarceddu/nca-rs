@@ -24,6 +24,7 @@
 
 mod config;
 pub mod config_file;
+mod engagement;
 mod engine;
 mod json;
 mod report;

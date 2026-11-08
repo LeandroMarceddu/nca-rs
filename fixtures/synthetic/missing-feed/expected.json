@@ -8,7 +8,7 @@
     "dialect": "generic",
     "geometry_uncertain_after": null
   },
-  "config_digest": "4efee7d368bdede663f5ca5a8d712e05bee3e2835eb8c4b08854805fdb93eabd",
+  "config_digest": "8041d8990db989a35ea83693c3cd4ae27fd7fa2d0f4b1eec589ce0a7e46cd9e1",
   "stock_source": "explicit",
   "tool_inventory": [
     {
@@ -96,8 +96,8 @@
   ],
   "truncated": {},
   "coverage": {
-    "evaluated": 29,
-    "total": 34,
+    "evaluated": 33,
+    "total": 45,
     "skipped": [
       {
         "rule": "geometry.feed_out_of_range",
@@ -113,6 +113,41 @@
         "rule": "modal.spindle_direction",
         "missing_input": "tool.right_hand:T1",
         "reason": "tool T1 has no handedness"
+      },
+      {
+        "rule": "process.chipload",
+        "missing_input": "material",
+        "reason": "a material preset is required"
+      },
+      {
+        "rule": "process.flute_length",
+        "missing_input": "tool.flute_length:T1",
+        "reason": "tool T1 has no flute length"
+      },
+      {
+        "rule": "process.mrr",
+        "missing_input": "material",
+        "reason": "a material preset is required"
+      },
+      {
+        "rule": "process.plunge_feed",
+        "missing_input": "feed.reference",
+        "reason": "no non-plunge cutting feed exists to use as a reference"
+      },
+      {
+        "rule": "process.shank_collision",
+        "missing_input": "tool.flute_length:T1",
+        "reason": "tool T1 has no flute length"
+      },
+      {
+        "rule": "process.stickout_ratio",
+        "missing_input": "tool.stickout:T1",
+        "reason": "tool T1 has no stickout"
+      },
+      {
+        "rule": "process.surface_speed",
+        "missing_input": "material",
+        "reason": "a material preset is required"
       },
       {
         "rule": "travel.machine_envelope",

@@ -17,9 +17,11 @@ and `nca rules` are generated from it, so they cannot drift.
 - Missing-input keys are stable and use the form `tool.<field>:T<n>`,
   `machine`, `material`, `stock`, `stock.explicit`, `rule.disabled`,
   `machine.spindle_manual`, `machine.max_feed_mm_min`,
-  `machine.max_spindle_rpm`, `tool.data`, or `feed.inverse_time`.
-  `stock` means the stock extents are degenerate or non-finite; `stock.explicit`
-  means a rule requires user-supplied stock and the stock is inferred.
+  `machine.max_spindle_rpm`, `tool.data`, `feed.reference`, or
+  `feed.inverse_time`.
+  `stock` means the stock extents are degenerate or the grid cannot resolve the
+  feature; `stock.explicit` means a rule requires user-supplied stock and the
+  stock is inferred.
 - Rules whose `requirements()` include a tool field are `Basis::Model` when the
   value can be comment-derived (`geometry.overlapping_holes`,
   `geometry.arc_smaller_than_tool`, `modal.spindle_direction`). Rules that use
@@ -133,6 +135,10 @@ default rather than disabling a rule.
 
 All are configurable through `RuleSettings::thresholds`.
 
+`process.radial_engagement` evaluates only side-cutting kinds (`Feed`, `Ramp`,
+`ArcCw`, `ArcCcw`, `HelixCw`, `HelixCcw`). A plunge, drill, peck, or bore is
+fully engaged by definition and is not a radial-engagement finding.
+
 | Key | Default | Rule |
 |---|---|---|
 | `axial_doc_ratio` | 1.0 | `process.axial_depth` (1 x tool diameter) |
@@ -147,19 +153,23 @@ All are configurable through `RuleSettings::thresholds`.
 
 ### `process.thin_wall` definition
 
-After the full-program z-map pass, scan the final heightmap for a cell whose
-height is below the stock top (a cut cell) and whose distance to the nearest
-standing stock is less than `min_wall_mm` on opposite sides. The rule reports
-the narrowest wall per connected cut region, with the source line of the
-cutting pass that produced it. It requires explicit stock because inferred stock
-is fitted to the cuts and would manufacture or erase walls.
+After the full-program z-map pass, scan the final heightmap for a run of
+standing cells between **two cut regions**. A run is a wall only when both
+sides are cut material; a cut-to-stock boundary is the part edge, not a wall.
+The reported width is the run length in cells times the cell size. If the grid
+cell is coarser than `min_wall_mm`, the rule skips with `stock` because the
+resolution cannot support the measurement. It requires explicit stock because
+inferred stock is fitted to the cuts.
 
 ### `process.rest_material` definition
 
-After the full-program pass, find cells inside the XY envelope of the cutting
-motions whose final height is above `lowest_final_height + rest_material_mm`.
-Report one finding per connected region, with the region area and the highest
-remaining height. It requires explicit stock for the same reason.
+After the full-program pass, a cell is *cut* when its final height is below the
+stock top. Flood-fill the uncut cells from the grid border; only uncut cells
+that are unreachable are **enclosed** by cuts. A connected enclosed region
+whose height exceeds `lowest_final_height + rest_material_mm` is reported once,
+with area, highest height, centroid, and the nearest cutting line. Material
+outside the swept footprint (for example the square corner left by a round tool)
+is not counted.
 
 ## Evidence keys
 
@@ -185,6 +195,15 @@ Common evidence keys, typed as `EvidenceValue`:
 | `length_mm`, `threshold` | Float | `geometry.tiny_segment` |
 | `radius_mm`, `end_radius_mm`, `delta_mm` | Float | `geometry.arc_radius_mismatch` |
 | `shortfall_mm` | Float | `geometry.arc_smaller_than_tool` |
+| `axial_doc_mm`, `radial_doc_mm` | Float | `process.axial_depth`, `process.radial_engagement` |
+| `contact_angle_deg` | Float | `process.radial_engagement` |
+| `mrr_mm3_min` | Float | `process.mrr` |
+| `ratio` | Float | process threshold rules |
+| `area_mm2`, `region_cells` | Float/Int | rest and thin-wall regions |
+| `highest_mm`, `height_above_lowest_mm`, `lowest_final_height_mm` | Float | `process.rest_material` |
+| `wall_mm`, `cell_mm` | Float | `process.thin_wall` |
+| `centroid_mm` | Point3 | rest and thin-wall regions |
+| `measured` | Float | every threshold rule |
 | `threshold` | Float | threshold rules |
 | `measured` | Float | threshold rules |
 

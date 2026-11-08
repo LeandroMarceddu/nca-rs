@@ -8,7 +8,7 @@
     "dialect": "generic",
     "geometry_uncertain_after": null
   },
-  "config_digest": "6ee63cc0e1ba0aec3b87c5e80e019bff9b4db1201ad4ec4619c2c5a91cbc56a9",
+  "config_digest": "4811ecf7213a0f02972a87eb5c238e1da692f04f3242a086fa00e339ddb61567",
   "stock_source": "explicit",
   "tool_inventory": [
     {
@@ -31,11 +31,38 @@
       }
     }
   ],
-  "diagnostics": [],
+  "diagnostics": [
+    {
+      "rule": "process.rest_material",
+      "severity": "info",
+      "basis": "model",
+      "line": 7,
+      "column": 0,
+      "line_end": 7,
+      "message": "material up to 1.000 mm above the lowest final height remains over 324.0 mm2 inside the cleared footprint",
+      "evidence": {
+        "area_mm2": 324.000,
+        "cell_mm": 0.750,
+        "centroid_mm": [
+          20.250,
+          15.000,
+          0.000
+        ],
+        "height_above_lowest_mm": 1.000,
+        "highest_mm": 0.000,
+        "lowest_final_height_mm": -1.000,
+        "measured": 1.000,
+        "region_cells": 576,
+        "stock_source": "explicit",
+        "threshold": 0.500,
+        "tool": 1
+      }
+    }
+  ],
   "truncated": {},
   "coverage": {
-    "evaluated": 29,
-    "total": 34,
+    "evaluated": 34,
+    "total": 45,
     "skipped": [
       {
         "rule": "geometry.feed_out_of_range",
@@ -61,6 +88,36 @@
         "rule": "modal.spindle_stopped",
         "missing_input": "machine.spindle_manual",
         "reason": "the spindle is started manually; programmed spindle state is not authoritative"
+      },
+      {
+        "rule": "process.chipload",
+        "missing_input": "material",
+        "reason": "a material preset is required"
+      },
+      {
+        "rule": "process.flute_length",
+        "missing_input": "tool.flute_length:T1",
+        "reason": "tool T1 has no flute length"
+      },
+      {
+        "rule": "process.mrr",
+        "missing_input": "material",
+        "reason": "a material preset is required"
+      },
+      {
+        "rule": "process.shank_collision",
+        "missing_input": "tool.flute_length:T1",
+        "reason": "tool T1 has no flute length"
+      },
+      {
+        "rule": "process.stickout_ratio",
+        "missing_input": "tool.stickout:T1",
+        "reason": "tool T1 has no stickout"
+      },
+      {
+        "rule": "process.surface_speed",
+        "missing_input": "material",
+        "reason": "a material preset is required"
       }
     ]
   }

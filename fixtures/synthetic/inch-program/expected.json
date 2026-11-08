@@ -8,7 +8,7 @@
     "dialect": "generic",
     "geometry_uncertain_after": null
   },
-  "config_digest": "7e44fe9bb2372ff7769bf4647f106d9fd06649fc0423e27d3339e26166d86a4b",
+  "config_digest": "8bcc890c11c26cca199ebae26dcb7839bd09fc2b385cd022d9ef2b0e4e6e2ccf",
   "stock_source": "explicit",
   "tool_inventory": [
     {
@@ -31,11 +31,38 @@
       }
     }
   ],
-  "diagnostics": [],
+  "diagnostics": [
+    {
+      "rule": "process.rest_material",
+      "severity": "info",
+      "basis": "model",
+      "line": 10,
+      "column": 0,
+      "line_end": 10,
+      "message": "material up to 1.270 mm above the lowest final height remains over 239.1 mm2 inside the cleared footprint",
+      "evidence": {
+        "area_mm2": 239.063,
+        "cell_mm": 0.750,
+        "centroid_mm": [
+          19.125,
+          16.125,
+          0.000
+        ],
+        "height_above_lowest_mm": 1.270,
+        "highest_mm": 0.000,
+        "lowest_final_height_mm": -1.270,
+        "measured": 1.270,
+        "region_cells": 425,
+        "stock_source": "explicit",
+        "threshold": 0.500,
+        "tool": 1
+      }
+    }
+  ],
   "truncated": {},
   "coverage": {
-    "evaluated": 29,
-    "total": 34,
+    "evaluated": 34,
+    "total": 45,
     "skipped": [
       {
         "rule": "geometry.feed_out_of_range",
@@ -51,6 +78,36 @@
         "rule": "modal.spindle_direction",
         "missing_input": "tool.right_hand:T1",
         "reason": "tool T1 has no handedness"
+      },
+      {
+        "rule": "process.chipload",
+        "missing_input": "material",
+        "reason": "a material preset is required"
+      },
+      {
+        "rule": "process.flute_length",
+        "missing_input": "tool.flute_length:T1",
+        "reason": "tool T1 has no flute length"
+      },
+      {
+        "rule": "process.mrr",
+        "missing_input": "material",
+        "reason": "a material preset is required"
+      },
+      {
+        "rule": "process.shank_collision",
+        "missing_input": "tool.flute_length:T1",
+        "reason": "tool T1 has no flute length"
+      },
+      {
+        "rule": "process.stickout_ratio",
+        "missing_input": "tool.stickout:T1",
+        "reason": "tool T1 has no stickout"
+      },
+      {
+        "rule": "process.surface_speed",
+        "missing_input": "material",
+        "reason": "a material preset is required"
       },
       {
         "rule": "travel.machine_envelope",

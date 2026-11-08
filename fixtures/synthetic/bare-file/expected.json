@@ -8,7 +8,7 @@
     "dialect": "generic",
     "geometry_uncertain_after": null
   },
-  "config_digest": "145a2a07a172764f695d7ed409e96c903acdf70c62387ce4f8b2ed7db83e668d",
+  "config_digest": "e6d4ca73e7e5b38bfd9cf9007ab504eeba36e25c08fe9e66e2c21cab576e7aa4",
   "stock_source": "inferred",
   "tool_inventory": [
     {
@@ -152,8 +152,8 @@
   ],
   "truncated": {},
   "coverage": {
-    "evaluated": 25,
-    "total": 34,
+    "evaluated": 26,
+    "total": 45,
     "skipped": [
       {
         "rule": "geometry.arc_smaller_than_tool",
@@ -184,6 +184,81 @@
         "rule": "modal.tool_unknown",
         "missing_input": "tool.data",
         "reason": "no tool data"
+      },
+      {
+        "rule": "process.axial_depth",
+        "missing_input": "tool.diameter:T0",
+        "reason": "tool T0 has no diameter"
+      },
+      {
+        "rule": "process.chipload",
+        "missing_input": "material",
+        "reason": "a material preset is required"
+      },
+      {
+        "rule": "process.chipload",
+        "missing_input": "tool.flutes:T0",
+        "reason": "tool T0 has no flute count"
+      },
+      {
+        "rule": "process.flute_length",
+        "missing_input": "tool.flute_length:T0",
+        "reason": "tool T0 has no flute length"
+      },
+      {
+        "rule": "process.mrr",
+        "missing_input": "material",
+        "reason": "a material preset is required"
+      },
+      {
+        "rule": "process.mrr",
+        "missing_input": "tool.diameter:T0",
+        "reason": "tool T0 has no diameter"
+      },
+      {
+        "rule": "process.radial_engagement",
+        "missing_input": "tool.diameter:T0",
+        "reason": "tool T0 has no diameter"
+      },
+      {
+        "rule": "process.rest_material",
+        "missing_input": "stock.explicit",
+        "reason": "explicit stock is required, but the stock was inferred"
+      },
+      {
+        "rule": "process.shank_collision",
+        "missing_input": "tool.flute_length:T0",
+        "reason": "tool T0 has no flute length"
+      },
+      {
+        "rule": "process.stickout_ratio",
+        "missing_input": "tool.diameter:T0",
+        "reason": "tool T0 has no diameter"
+      },
+      {
+        "rule": "process.stickout_ratio",
+        "missing_input": "tool.stickout:T0",
+        "reason": "tool T0 has no stickout"
+      },
+      {
+        "rule": "process.surface_speed",
+        "missing_input": "material",
+        "reason": "a material preset is required"
+      },
+      {
+        "rule": "process.surface_speed",
+        "missing_input": "tool.diameter:T0",
+        "reason": "tool T0 has no diameter"
+      },
+      {
+        "rule": "process.thin_wall",
+        "missing_input": "stock.explicit",
+        "reason": "explicit stock is required, but the stock was inferred"
+      },
+      {
+        "rule": "process.thin_wall",
+        "missing_input": "tool.diameter:T0",
+        "reason": "tool T0 has no diameter"
       },
       {
         "rule": "travel.machine_envelope",

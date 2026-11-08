@@ -8,7 +8,7 @@
     "dialect": "generic",
     "geometry_uncertain_after": null
   },
-  "config_digest": "bcac059cd4836cd2031c28a6f711d65f1abe5ee67fb56ba34c1e25a822bcb221",
+  "config_digest": "131249c64efb4f74bad1af9faf95f5a42a771f7545e623c99257211c02ad12f3",
   "stock_source": "explicit",
   "tool_inventory": [
     {
@@ -38,8 +38,8 @@
   "diagnostics": [],
   "truncated": {},
   "coverage": {
-    "evaluated": 30,
-    "total": 34,
+    "evaluated": 35,
+    "total": 45,
     "skipped": [
       {
         "rule": "geometry.feed_out_of_range",
@@ -50,6 +50,36 @@
         "rule": "geometry.spindle_out_of_range",
         "missing_input": "machine",
         "reason": "machine limits are required"
+      },
+      {
+        "rule": "process.chipload",
+        "missing_input": "material",
+        "reason": "a material preset is required"
+      },
+      {
+        "rule": "process.flute_length",
+        "missing_input": "tool.flute_length:T1",
+        "reason": "tool T1 has no flute length"
+      },
+      {
+        "rule": "process.mrr",
+        "missing_input": "material",
+        "reason": "a material preset is required"
+      },
+      {
+        "rule": "process.shank_collision",
+        "missing_input": "tool.flute_length:T1",
+        "reason": "tool T1 has no flute length"
+      },
+      {
+        "rule": "process.stickout_ratio",
+        "missing_input": "tool.stickout:T1",
+        "reason": "tool T1 has no stickout"
+      },
+      {
+        "rule": "process.surface_speed",
+        "missing_input": "material",
+        "reason": "a material preset is required"
       },
       {
         "rule": "travel.machine_envelope",

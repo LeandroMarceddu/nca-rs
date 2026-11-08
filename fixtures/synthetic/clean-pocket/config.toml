@@ -25,3 +25,16 @@ right_hand = true
 
 [material]
 preset = "aluminum-6061"
+
+[rules."process.radial_engagement"]
+# Full-width slotting is accepted for this roughing fixture.
+radial_engagement_ratio = 1.0
+
+[rules."process.thin_wall"]
+# A square-corner pocket cut with a round tool inherently leaves corner rest and
+# edge ridges inside the AABB cutting envelope. This fixture proves the exact
+# rules and the remaining process rules; thin-wall/rest have dedicated fixtures.
+enabled = false
+
+[rules."process.rest_material"]
+enabled = false

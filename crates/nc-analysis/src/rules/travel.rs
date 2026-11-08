@@ -1,7 +1,7 @@
 //! `travel.*` rules beyond the vertical-slice envelope check.
 //!
-//! [`travel.z_below_table`](ZBelowTable) checks motion endpoints against the
-//! configured machine table Z. [`travel.stock_bounds`](StockBounds) checks
+//! `travel.z_below_table` checks motion endpoints against the configured
+//! machine table Z. `travel.stock_bounds` checks
 //! cutting endpoints against explicit stock. Both use the stored motion stream,
 //! so each finding maps to one source line.
 

@@ -461,7 +461,7 @@ impl NcaState {
     /// Rebuilds the search mapping only when the source or query changed.
     ///
     /// The program panel calls this once per frame and then clones the cached
-    /// [`ProgramIndex`], so canvas gestures never rescan a million-line file.
+    /// `ProgramIndex`, so canvas gestures never rescan a million-line file.
     pub fn ensure_index(&mut self) {
         let Some(loaded) = self.loaded.as_ref() else {
             self.index_cache = None;

@@ -45,6 +45,8 @@ project knowledge store is lost.
 | 2026-11-08 | CLI/config/fixtures: clippy + tests | pass, 35+25+14+5+9+2 |
 | 2026-11-08 | GitHub CI run 42467554129 | success on all jobs |
 | 2026-11-08 | app SIMULATE: clippy + `cargo test -p nc-app` | pass, 66 tests; 4 captures at 1280x800 |
+| 2026-11-08 | M2 process: clippy + `cargo test -p nc-analysis` | pass, 46 unit + 33 process tests |
+| 2026-11-08 | full workspace gate after M2 | fmt, clippy, tests, docs pass |
 | 2026-11-08 | parser corrections: clippy + `cargo test -p nc-gcode -p nc-stock -p nc-sim` | pass; real file 119,393 records, 0 errors, 336 ms |
 
 ## Accepted milestones
@@ -76,6 +78,11 @@ project knowledge store is lost.
 - **App SIMULATE** — transport, frame-clock playback, heightfield stock mesh,
   traversed/future path, tool chip, assumed-size badge, HUD stats, 66 tests,
   four 1280x800 captures (2026-11-08).
+- **M2 process rules** — shared engagement pass and 11 process rules; radial
+  checks are side-cutting only; rest material uses enclosed regions; 33 tests
+  (2026-11-08).
+- **Full workspace gate** — fmt, clippy `-D warnings`, tests, and docs clean
+  (2026-11-08).
 
 ## Version control
 

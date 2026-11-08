@@ -1,2 +1,6 @@
 [parse]
 dialect = "generic"
+
+[rules."process.radial_engagement"]
+# These focused fixtures accept full-width slotting.
+radial_engagement_ratio = 1.0

@@ -10,6 +10,7 @@ pub mod geometry;
 pub mod machine_envelope;
 pub mod modal;
 pub mod parse;
+pub mod process;
 pub mod rapid_at_depth;
 pub mod travel;
 
@@ -31,5 +32,6 @@ pub fn all() -> Vec<Box<dyn Rule>> {
     rules.extend(rapid_at_depth::rules());
     rules.extend(clearance::rules());
     rules.extend(geometry::rules());
+    rules.extend(process::rules());
     rules
 }

@@ -216,4 +216,25 @@ consequence for the contract.
   `modal.spindle_stopped` and `SPEC.md`.
 - **Reason:** A manual spindle has no authoritative programmed speed.
 
+## D025 - M2 engagement applies radial checks only to side cutting
+
+- **Decision:** `process.radial_engagement` ignores plunge/drill/peck/bore
+  passes. `process.rest_material` flood-fills the uncut stock from the grid
+  border and reports only enclosed regions. `process.thin_wall` requires a cut
+  region on both sides of the ridge.
+- **Reason:** Flagging a drill as 100% radial engagement is meaningless, and an
+  AABB-based rest check reported the square corners left by a round tool as
+  false rest material. Both produced noise on correct programs.
+- **Consequence:** `clean-pocket` disables the two final-state model rules and
+  accepts full-width slotting explicitly; dedicated rest/thin-wall fixtures are
+  a follow-up. Coverage reports every disabled rule.
+
+## D026 - The M1 catalog is complete; M2 is model-based
+
+- **Decision:** 34 M1 rules plus 11 M2 rules are registered (45 total). All M2
+  rules are `Basis::Model`; M1 rules that require optional tool data are Model
+  (D021). `RULESET_VERSION` stays `1.0.0` for the first release.
+- **Reason:** The first release has no prior published report format to
+  migrate; future behavior changes bump the version.
+
 

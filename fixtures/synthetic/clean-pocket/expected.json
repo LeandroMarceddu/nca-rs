@@ -3,18 +3,18 @@
   "ruleset_version": "1.0.0",
   "input": {
     "file_name": "source.nc",
-    "sha256": "6fdcca2bf680e5664e3e9458920939045f3de4f01611b2c6409c9c5408b8becb",
-    "line_count": 19,
+    "sha256": "5f492efd4eeaf3e7cb228ed686aed2174524ef49783e3769f141d2e4511a7aa2",
+    "line_count": 21,
     "dialect": "generic",
     "geometry_uncertain_after": null
   },
-  "config_digest": "62f962c446db13d0b025702c686f19dcbe339655ee5e8bc563fd26bbd6817d62",
+  "config_digest": "c53f90d1d235874f73b96de7d4e87dbf1fe38ff917566d0c2bf4de474fcb4996",
   "stock_source": "explicit",
   "tool_inventory": [
     {
       "tool": 1,
       "first_line": 4,
-      "motion_count": 13,
+      "motion_count": 15,
       "fields": {
         "diameter_mm": {
           "value": 6.000,
@@ -50,8 +50,19 @@
   "diagnostics": [],
   "truncated": {},
   "coverage": {
-    "evaluated": 34,
-    "total": 34,
-    "skipped": []
+    "evaluated": 43,
+    "total": 45,
+    "skipped": [
+      {
+        "rule": "process.rest_material",
+        "missing_input": "rule.disabled",
+        "reason": "rule is disabled in configuration"
+      },
+      {
+        "rule": "process.thin_wall",
+        "missing_input": "rule.disabled",
+        "reason": "rule is disabled in configuration"
+      }
+    ]
   }
 }

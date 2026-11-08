@@ -209,7 +209,7 @@ fn help_version_and_rules_are_available() {
     let rules = nca(&["rules"]);
     assert_eq!(rules.status.code(), Some(0));
     let stdout = text(&rules);
-    assert!(stdout.contains("rules: 3"), "{stdout}");
+    assert!(stdout.contains("rules: 45"), "{stdout}");
     for id in [
         "clearance.rapid_at_depth",
         "modal.feed_missing",

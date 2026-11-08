@@ -689,6 +689,7 @@ pub struct EngagementData {
 pub struct PassEngagement {
     pub motion_index: usize,
     pub line: usize,
+    pub kind: MoveKind,
     pub axial_doc_mm: f64,
     pub radial_doc_mm: f64,
     pub contact_angle_rad: f64,
@@ -883,8 +884,8 @@ auto-blessed.
 | `nc-stock` inference, heightmap, cutter shapes, sweep | complete |
 | `nc-sim` timeline, tick engine, seek, stats | complete |
 | `nc-analysis` engine, coverage, canonical JSON, config loader | complete |
-| `nc-analysis` rules | three vertical-slice rules; full M1/M2 catalog pending |
+| `nc-analysis` rules | complete catalog: 34 M1 + 11 M2 = 45 rules |
 | `nc-app` VIEW shell | complete |
-| `nc-app` SIMULATE mode | in progress |
-| `nc-cli` commands and `nc-fixtures` harness | complete; goldens await review |
-| Report goldens | drafts generated; not yet reviewed or committed |
+| `nc-app` SIMULATE mode | complete; diagnostics/coverage UI pending |
+| `nc-cli` commands and `nc-fixtures` harness | complete; 13 reviewed goldens |
+| Report goldens | reviewed and committed for the synthetic corpus |
