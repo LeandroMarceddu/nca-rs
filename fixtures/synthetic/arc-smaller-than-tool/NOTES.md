@@ -3,3 +3,7 @@
 A 2 mm radius internal arc cut with a 6 mm cutter (3 mm radius). Expected:
 `geometry.arc_smaller_than_tool` warning. Near-miss: a 4 mm radius arc would
 still be smaller; a 6.1 mm radius arc would not.
+
+Golden draft: `geometry.arc_smaller_than_tool` is not implemented yet, so the
+draft has no diagnostics. It only proves the arc parses and the coverage skip
+for missing machine limits is reported.

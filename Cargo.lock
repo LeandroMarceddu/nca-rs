@@ -3797,6 +3797,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
+ "toml 0.8.23",
  "tracing",
 ]
 
@@ -3828,6 +3829,7 @@ dependencies = [
  "nc-gcode",
  "nc-sim",
  "nc-stock",
+ "png 0.17.16",
  "serde_json",
  "thiserror 2.0.21",
  "tracing",

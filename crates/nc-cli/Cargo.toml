@@ -17,6 +17,7 @@ nc-gcode.workspace = true
 nc-stock.workspace = true
 nc-sim.workspace = true
 nc-analysis.workspace = true
+png.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

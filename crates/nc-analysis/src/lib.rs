@@ -23,6 +23,7 @@
 #![warn(missing_docs)]
 
 mod config;
+pub mod config_file;
 mod engine;
 mod json;
 mod report;
@@ -32,6 +33,7 @@ mod types;
 pub mod rules;
 
 pub use config::{AnalysisConfig, RuleConfig, RuleSettings, StockConfig, Tolerances};
+pub use config_file::{ConfigError, ConfigLocation, LoadedConfig, load_config, parse_config};
 pub use engine::{AnalysisRequest, RuleRegistry, analyze};
 pub use report::{
     Coverage, Diagnostic, InputInfo, InventoryField, MAX_FINDINGS_PER_RULE, MAX_FINDINGS_TOTAL,
