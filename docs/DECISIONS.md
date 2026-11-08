@@ -260,6 +260,9 @@ consequence for the contract.
 
 ## D029 - The app analyzes with inferred stock until the setup sheet lands
 
+- **Status:** superseded by the setup sheet on 2026-11-08. The app can now load
+  a TOML config or edit stock/machine/material/tools in the setup sheet; the
+  inferred path remains the default when nothing is set.
 - **Decision:** The app resolves comment/user tools, uses inferred stock, and
   leaves machine/material unset in this milestone. Coverage exposes every rule
   that this skips, and the set-value actions for stock/machine/material open a
@@ -281,3 +284,24 @@ consequence for the contract.
   bounded flags while keeping the four source-level rules working. Measure again
   after that change; do not lower the target silently.
 
+
+## D031 - Tool overlays persist per file hash, not per path
+
+- **Decision:** The app stores edited tool tables in `NcaConfig.tool_tables`
+  keyed by the source SHA-256. `LoadedProgram` carries the hash; reports still
+  contain only the file name.
+- **Reason:** The same file can move; a path key would lose the edits or collide
+  across copies.
+- **Consequence:** Re-exporting the inventory as TOML `[[tool]]` and migrating
+  the old global tool field are follow-ups. Comment-derived fields fall back
+  when cleared until a suppression/tombstone state exists.
+
+## D032 - Rule thresholds are editable as key/value pairs
+
+- **Decision:** The setup sheet lists the threshold keys present in config and
+  accepts a free-form numeric key/value. `Rule` does not expose its documented
+  default threshold keys.
+- **Reason:** Adding a `Rule::threshold_keys()` API is a larger interface change
+  and would duplicate the docs/RULES.md catalog.
+- **Consequence:** Users can override documented keys, but the sheet cannot
+  enumerate every possible key. Revisit when rule metadata is centralized.

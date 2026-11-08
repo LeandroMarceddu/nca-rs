@@ -16,6 +16,7 @@ mod analysis_worker;
 mod file_browser;
 mod layout;
 mod program;
+mod setup;
 mod shell;
 mod sim;
 mod sim_worker;
@@ -90,7 +91,7 @@ impl LaunchOptions {
     /// `--light`, `--dark`, `--high-contrast`, `--fullscreen`, `--3d`,
     /// `--browser`, `--simulate`, `--sim-at FRACTION`, `--play`,
     /// `--analyze`, `--panel diagnostics|coverage`, `--select-rule ID`,
-    /// and `--open PATH` or `--open=PATH`.
+    /// `--setup`, `--export`, and `--open PATH` or `--open=PATH`.
     ///
     /// `--sim-at` and `--play` imply `--simulate`; the fraction is clamped to
     /// `0.0..=1.0`. `--analyze` opens the diagnostics panel unless another
@@ -119,6 +120,8 @@ impl LaunchOptions {
                 analyze,
                 panel,
                 select_rule: value_argument(&args, "--select-rule"),
+                setup: args.iter().any(|arg| arg == "--setup"),
+                export: args.iter().any(|arg| arg == "--export"),
             },
         }
     }
@@ -339,6 +342,10 @@ mod tests {
         let options = LaunchOptions::from_args(["--play"].map(str::to_string));
         assert!(options.simulate);
         assert!(options.autoplay);
+
+        let options = LaunchOptions::from_args(["--setup", "--export"].map(str::to_string));
+        assert!(options.review.setup);
+        assert!(options.review.export);
     }
 
     #[test]

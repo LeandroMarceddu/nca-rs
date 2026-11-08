@@ -8,14 +8,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use nc_core::{Tool, ToolTable};
-use nc_gcode::{ParseError, Program, parse_program};
+use std::collections::BTreeMap;
+
+use nc_core::{Dialect, ToolTable};
+use nc_gcode::{ParseError, ParserConfig, Program, parse_program_with};
 use nc_stock::{InferenceBasis, StockModel, StockSource};
 use nc_viewer::MoveKind;
 use serde::{Deserialize, Serialize};
 
 use crate::file_browser::{ProgramFile, RecentFiles};
 use crate::program::{DEMO_NAME, DEMO_SOURCE, ProgramIndex, SourceLine, build_source_lines};
+use crate::setup::{SetupState, sha256_hex};
 use crate::theme::ThemeMode;
 
 /// Config directory name.
@@ -91,6 +94,8 @@ pub struct LoadedProgram {
     pub path: Option<PathBuf>,
     /// Source text, kept for the program list even when parsing fails.
     pub source: Arc<str>,
+    /// SHA-256 of the source bytes; the key for the local tool overlay.
+    pub hash: String,
     /// Display lines with line and `N` numbers.
     pub lines: Arc<[SourceLine]>,
     /// Parsed program, when the parser accepted the file.
@@ -104,17 +109,31 @@ pub struct LoadedProgram {
 }
 
 impl LoadedProgram {
-    /// Loads a validated file and parses it.
+    /// Loads a validated file and parses it with the selected dialect.
     #[must_use]
-    pub fn from_file(file: ProgramFile) -> Self {
-        Self::from_source(file.name, Some(file.path), file.source, false)
+    pub fn from_file(file: ProgramFile, dialect: Dialect) -> Self {
+        Self::from_source_with_dialect(file.name, Some(file.path), file.source, false, dialect)
     }
 
-    /// Parses source text and infers stock.
+    /// Parses source text with Generic semantics and infers stock.
     #[must_use]
     pub fn from_source(name: String, path: Option<PathBuf>, source: String, demo: bool) -> Self {
+        Self::from_source_with_dialect(name, path, source, demo, Dialect::Generic)
+    }
+
+    /// Parses source text with an explicit dialect and infers stock.
+    #[must_use]
+    pub fn from_source_with_dialect(
+        name: String,
+        path: Option<PathBuf>,
+        source: String,
+        demo: bool,
+        dialect: Dialect,
+    ) -> Self {
+        let hash = sha256_hex(source.as_bytes());
         let source: Arc<str> = Arc::from(source);
-        match parse_program(&source) {
+        let parser_config = ParserConfig::default().with_dialect(dialect);
+        match parse_program_with(&source, &parser_config) {
             Ok(program) => {
                 let stock = StockModel::infer(&program);
                 let lines = build_source_lines(&source, Some(&program));
@@ -122,6 +141,7 @@ impl LoadedProgram {
                     name,
                     path,
                     source,
+                    hash,
                     lines,
                     program: Some(Arc::new(program)),
                     errors: Vec::new(),
@@ -135,6 +155,7 @@ impl LoadedProgram {
                     name,
                     path,
                     source,
+                    hash,
                     lines,
                     program: None,
                     errors,
@@ -147,8 +168,29 @@ impl LoadedProgram {
 
     /// The deterministic built-in demo.
     #[must_use]
-    pub fn demo() -> Self {
-        Self::from_source(DEMO_NAME.to_string(), None, DEMO_SOURCE.to_string(), true)
+    pub fn demo(dialect: Dialect) -> Self {
+        Self::from_source_with_dialect(
+            DEMO_NAME.to_string(),
+            None,
+            DEMO_SOURCE.to_string(),
+            true,
+            dialect,
+        )
+    }
+
+    /// Re-parses the same bytes with a new dialect.
+    ///
+    /// The SHA-256 is unchanged, so the per-file tool overlay survives. The
+    /// caller rebuilds the simulation and re-runs analysis after this.
+    pub fn reparse(&mut self, dialect: Dialect) {
+        let next = Self::from_source_with_dialect(
+            self.name.clone(),
+            self.path.clone(),
+            self.source.to_string(),
+            self.demo,
+            dialect,
+        );
+        *self = next;
     }
 
     /// Number of source lines.
@@ -234,7 +276,8 @@ struct PersistedConfig {
     theme: String,
     recent: Vec<PathBuf>,
     last_dir: Option<PathBuf>,
-    tools: ToolTable,
+    /// Tool overlays keyed by the source SHA-256, never by path.
+    tool_tables: BTreeMap<String, ToolTable>,
 }
 
 impl Default for PersistedConfig {
@@ -243,7 +286,7 @@ impl Default for PersistedConfig {
             theme: ThemeMode::default().key().to_string(),
             recent: Vec::new(),
             last_dir: None,
-            tools: ToolTable::default(),
+            tool_tables: BTreeMap::new(),
         }
     }
 }
@@ -257,11 +300,11 @@ pub struct NcaConfig {
     pub recent: RecentFiles,
     /// Last browser directory.
     pub last_dir: Option<PathBuf>,
-    /// User-entered tool data, keyed by tool number.
+    /// Per-file tool overlays keyed by the source SHA-256.
     ///
-    /// Comment hints are merged over this table at simulation time; user data
-    /// always wins for a field it sets.
-    pub tools: ToolTable,
+    /// Comment hints are merged over one table at simulation and analysis
+    /// time; user data always wins for a field it sets.
+    pub tool_tables: BTreeMap<String, ToolTable>,
     path: Option<PathBuf>,
 }
 
@@ -271,7 +314,7 @@ impl Default for NcaConfig {
             theme: ThemeMode::default(),
             recent: RecentFiles::new(),
             last_dir: None,
-            tools: ToolTable::default(),
+            tool_tables: BTreeMap::new(),
             path: None,
         }
     }
@@ -305,7 +348,7 @@ impl NcaConfig {
             theme: ThemeMode::from_key(&persisted.theme),
             recent: RecentFiles::from_paths(persisted.recent),
             last_dir: persisted.last_dir,
-            tools: persisted.tools,
+            tool_tables: persisted.tool_tables,
             path: Some(path.to_path_buf()),
         }
     }
@@ -330,7 +373,7 @@ impl NcaConfig {
             theme: self.theme.key().to_string(),
             recent: self.recent.paths().to_vec(),
             last_dir: self.last_dir.clone(),
-            tools: self.tools.clone(),
+            tool_tables: self.tool_tables.clone(),
         };
         let text = serde_json::to_string_pretty(&persisted)
             .map_err(|error| format!("config serialization: {error}"))?;
@@ -355,9 +398,19 @@ impl NcaConfig {
         self.persist();
     }
 
-    /// Inserts one user tool entry and persists the table.
-    pub fn set_tool(&mut self, tool: Tool) {
-        self.tools.insert(tool);
+    /// Tool overlay for one source hash. Missing hashes yield an empty table.
+    #[must_use]
+    pub fn tools_for(&self, hash: &str) -> ToolTable {
+        self.tool_tables.get(hash).cloned().unwrap_or_default()
+    }
+
+    /// Replaces the tool overlay for one source hash and persists it.
+    pub fn set_tools_for(&mut self, hash: &str, table: ToolTable) {
+        if table.is_empty() {
+            self.tool_tables.remove(hash);
+        } else {
+            self.tool_tables.insert(hash.to_string(), table);
+        }
         self.persist();
     }
 
@@ -399,6 +452,8 @@ pub fn config_path() -> Option<PathBuf> {
 pub struct NcaState {
     /// Local configuration.
     pub config: NcaConfig,
+    /// Editable analysis inputs: stock, tools, material, machine, rules, sim.
+    pub setup: SetupState,
     /// Reserved mode slot.
     pub mode: AppMode,
     /// Currently displayed program.
@@ -423,19 +478,7 @@ pub struct NcaState {
 
 impl Default for NcaState {
     fn default() -> Self {
-        Self {
-            config: NcaConfig::load(),
-            mode: AppMode::View,
-            loaded: Some(LoadedProgram::demo()),
-            loading: false,
-            selected_line: None,
-            search: String::new(),
-            visible_kinds: [true; MoveKind::ALL.len()],
-            stock_visible: true,
-            settings_open: false,
-            index_cache: None,
-            index_key: None,
-        }
+        Self::new(NcaConfig::load())
     }
 }
 
@@ -443,10 +486,13 @@ impl NcaState {
     /// Creates state and loads the built-in demo.
     #[must_use]
     pub fn new(config: NcaConfig) -> Self {
-        Self {
+        let setup = SetupState::default();
+        let loaded = LoadedProgram::demo(setup.dialect);
+        let mut state = Self {
             config,
+            setup,
             mode: AppMode::View,
-            loaded: Some(LoadedProgram::demo()),
+            loaded: Some(loaded),
             loading: false,
             selected_line: None,
             search: String::new(),
@@ -455,7 +501,9 @@ impl NcaState {
             settings_open: false,
             index_cache: None,
             index_key: None,
-        }
+        };
+        state.sync_setup_program();
+        state
     }
 
     /// Rebuilds the search mapping only when the source or query changed.
@@ -485,10 +533,12 @@ impl NcaState {
 
     /// Loads the demo program, used when startup parsing of the demo fails.
     pub fn reset_to_demo(&mut self) {
-        self.loaded = Some(LoadedProgram::demo());
+        let dialect = self.setup.dialect;
+        self.loaded = Some(LoadedProgram::demo(dialect));
         self.loading = false;
         self.selected_line = None;
         self.search.clear();
+        self.sync_setup_program();
     }
 
     /// Adopts a successfully loaded file.
@@ -500,6 +550,80 @@ impl NcaState {
         self.loading = false;
         self.selected_line = None;
         self.search.clear();
+        self.sync_setup_program();
+    }
+
+    /// Rebuilds the tool inventory for the current program.
+    pub fn sync_setup_program(&mut self) {
+        if let Some(loaded) = self.loaded.as_ref() {
+            self.setup.sync_program(loaded);
+        } else {
+            self.setup.inventory.clear();
+            self.setup.selected_tool = None;
+        }
+    }
+
+    /// SHA-256 of the current source, used only as a local tool-table key.
+    #[must_use]
+    pub fn loaded_hash(&self) -> Option<&str> {
+        self.loaded.as_ref().map(|loaded| loaded.hash.as_str())
+    }
+
+    /// User tool overlay for the current file.
+    #[must_use]
+    pub fn user_tools(&self) -> ToolTable {
+        self.loaded_hash()
+            .map(|hash| self.config.tools_for(hash))
+            .unwrap_or_default()
+    }
+
+    /// User overlay merged with comment hints for one program.
+    #[must_use]
+    pub fn resolved_tools(&self, program: &Program) -> ToolTable {
+        ToolTable::resolve(&self.user_tools(), &program.tool_hints)
+    }
+
+    /// Stock model used by the chips and simulation.
+    #[must_use]
+    pub fn effective_stock(&self) -> Option<StockModel> {
+        let inferred = self.loaded.as_ref().and_then(|loaded| loaded.stock);
+        self.setup.effective_stock(inferred)
+    }
+
+    /// Truthful stock chip text.
+    #[must_use]
+    pub fn stock_label(&self) -> &'static str {
+        if self
+            .loaded
+            .as_ref()
+            .and_then(|loaded| loaded.stock)
+            .is_none()
+            && self.setup.analysis.stock.is_none()
+        {
+            return "STOCK: NONE";
+        }
+        self.setup.stock_label()
+    }
+
+    /// Stock source explanation with inferred basis and top Z.
+    #[must_use]
+    pub fn stock_basis_text(&self) -> String {
+        let inferred = self
+            .loaded
+            .as_ref()
+            .and_then(|loaded| loaded.stock.as_ref());
+        self.setup.stock_basis_text(inferred)
+    }
+
+    /// Effective stock dimensions as display text.
+    #[must_use]
+    pub fn stock_size_text(&self) -> String {
+        let Some(stock) = self.effective_stock() else {
+            return "--".to_string();
+        };
+        let [x, y] = stock.xy_extent_mm();
+        let height = stock.max_mm[2] - stock.min_mm[2];
+        format!("{x:.1} x {y:.1} x {height:.1} mm")
     }
 
     /// Display name of the loaded file.
@@ -566,6 +690,7 @@ impl NcaState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nc_core::Tool;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn scratch_path(tag: &str) -> PathBuf {
@@ -581,7 +706,7 @@ mod tests {
 
     #[test]
     fn demo_parses_and_infers_stock() {
-        let loaded = LoadedProgram::demo();
+        let loaded = LoadedProgram::demo(Dialect::Generic);
         assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
         let program = loaded.program.as_ref().expect("demo parse");
         assert!(program.stats.arc_moves >= 2);
@@ -640,17 +765,17 @@ mod tests {
     #[test]
     fn config_round_trips_theme_and_recent_files() {
         let path = scratch_path("round-trip");
-        let mut config = NcaConfig {
-            theme: ThemeMode::HighContrast,
-            ..NcaConfig::default()
-        };
+        let mut config = NcaConfig::load_from(&path);
+        config.theme = ThemeMode::HighContrast;
         config.recent.record(PathBuf::from("/tmp/a.nc"));
         config.recent.record(PathBuf::from("/tmp/b.nc"));
         config.last_dir = Some(PathBuf::from("/tmp"));
         let mut tool = Tool::new(3);
         tool.diameter_mm = Some(6.0);
         tool.shape = nc_core::ToolShape::Flat;
-        config.tools.insert(tool);
+        let mut table = ToolTable::new();
+        table.insert(tool);
+        config.set_tools_for("hash-three", table);
         config.save_to(&path).expect("save");
 
         let loaded = NcaConfig::load_from(&path);
@@ -659,9 +784,13 @@ mod tests {
         assert_eq!(loaded.recent.paths()[0], PathBuf::from("/tmp/b.nc"));
         assert_eq!(loaded.last_dir, Some(PathBuf::from("/tmp")));
         assert_eq!(
-            loaded.tools.get(3).and_then(|tool| tool.diameter_mm),
+            loaded
+                .tools_for("hash-three")
+                .get(3)
+                .and_then(|tool| tool.diameter_mm),
             Some(6.0)
         );
+        assert!(loaded.tools_for("hash-other").is_empty());
         let _ = fs::remove_file(path);
     }
 

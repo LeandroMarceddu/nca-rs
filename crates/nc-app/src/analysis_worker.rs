@@ -28,6 +28,28 @@ struct AnalysisJob {
     file_name: String,
     source: Arc<str>,
     config: AnalysisConfig,
+    dialect: DialectChoice,
+}
+
+/// Parser/analysis dialect and whether Generic was assumed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DialectChoice {
+    /// Selected dialect.
+    pub dialect: Dialect,
+    /// `true` when no dialect was configured and Generic was assumed.
+    pub assumed: bool,
+}
+
+impl DialectChoice {
+    /// Generic semantics with the assumed flag set.
+    #[cfg(test)]
+    #[must_use]
+    pub const fn generic_assumed() -> Self {
+        Self {
+            dialect: Dialect::Generic,
+            assumed: true,
+        }
+    }
 }
 
 /// One finished analysis. Stale generations are discarded by the shell.
@@ -75,6 +97,7 @@ impl AnalysisWorker {
         file_name: String,
         source: Arc<str>,
         config: AnalysisConfig,
+        dialect: DialectChoice,
     ) -> Result<(), String> {
         self.latest.store(generation.run, Ordering::Release);
         self.jobs
@@ -84,6 +107,7 @@ impl AnalysisWorker {
                 file_name,
                 source,
                 config,
+                dialect,
             })
             .map_err(|_| "the analysis worker stopped unexpectedly".to_string())
     }
@@ -120,9 +144,13 @@ fn worker_loop(
             continue;
         }
         let registry = RuleRegistry::from_rules(rules::all());
-        let request =
-            AnalysisRequest::new(&job.file_name, &job.source, &job.config, Dialect::Generic)
-                .with_dialect_assumed(true);
+        let request = AnalysisRequest::new(
+            &job.file_name,
+            &job.source,
+            &job.config,
+            job.dialect.dialect,
+        )
+        .with_dialect_assumed(job.dialect.assumed);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             analyze(&job.program, &request, &registry)
         }))
@@ -164,6 +192,7 @@ mod tests {
                 "part.nc".to_string(),
                 Arc::from(source),
                 config.clone(),
+                DialectChoice::generic_assumed(),
             )
             .expect("stale request");
         worker
@@ -173,6 +202,7 @@ mod tests {
                 "part.nc".to_string(),
                 Arc::from(source),
                 config,
+                DialectChoice::generic_assumed(),
             )
             .expect("current request");
 

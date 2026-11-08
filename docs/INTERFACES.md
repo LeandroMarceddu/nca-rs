@@ -890,6 +890,7 @@ auto-blessed.
 | `nc-analysis` rules | complete catalog: 34 M1 + 11 M2 = 45 rules |
 | `nc-app` VIEW shell | complete |
 | `nc-app` SIMULATE mode | complete |
-| `nc-app` diagnostics/coverage UI | complete for inferred-stock/tool inputs; config loading/setup sheet pending |
+| `nc-app` diagnostics/coverage UI | complete |
+| `nc-app` setup sheet, config loading, export | complete: TOML load, stock/tools/material/machine/sim/rules, SHA-keyed tool persistence, JSON/Markdown export |
 | `nc-cli` commands and `nc-fixtures` harness | complete; 13 reviewed goldens |
 | Report goldens | reviewed and committed for the synthetic corpus |

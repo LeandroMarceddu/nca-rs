@@ -22,26 +22,32 @@ use gpui_kit::{
     SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
     UniformListScrollHandle, Window, div, px, uniform_list,
 };
-use nc_analysis::{AnalysisConfig, Report, Severity as AnalysisSeverity};
-use nc_core::{Tool, ToolShape, ToolTable};
+use nc_analysis::config_file::load_config;
+use nc_analysis::{Report, Severity as AnalysisSeverity};
+use nc_core::{Dialect, FieldSource, Tool, ToolField, ToolShape, ToolTable};
 use nc_gcode::Program;
-use nc_sim::{SimConfig, Simulation};
+use nc_sim::Simulation;
 use nc_stock::{Cutter, StockModel};
 use nc_viewer::{MoveFamily, MoveKind, StockBox};
 
 use crate::analysis_ui::{
     AnalysisGeneration, AnalysisPanel, AnalysisState, CoverageGroup, CoverageTarget,
     DiagnosticFilter, OverlayLines, ReviewOptions, RuleCatalog, SeverityCounts, SeverityFilter,
-    coverage_groups, coverage_rule_summary, coverage_summary, focus_bounds, line_severities,
-    overlay_lines,
+    coverage_groups, coverage_summary, focus_bounds, line_severities, overlay_lines,
 };
-use crate::analysis_worker::AnalysisWorker;
+use crate::analysis_worker::{AnalysisWorker, DialectChoice};
 
 use crate::file_browser::{
     BrowserEntry, FileBrowser, compact_path, default_root, display_path, format_size, read_program,
 };
 use crate::layout::{STATUS_BAR_HEIGHT, ShellLayout, TOUCH_TARGET};
 use crate::program::SourceLine;
+use crate::setup::{
+    ADVISORY_NOTE, ExportFormat, MachineField, MaterialField, SimField, StatusMessage,
+    ToleranceField, apply_tool_field, file_name_of, format_number, format_optional, overlay_tool,
+    parse_non_negative, parse_optional_count, parse_optional_number, parse_optional_positive,
+    provenance_label, store_overlay_tool, write_export,
+};
 use crate::sim::{
     FrameClock, HeightfieldCache, HeightfieldMesh, PlaybackSpeed, SegmentLines, SimCanvas,
     SimToggles, ToolChip, Transport, follow_visible_row, format_diameter, format_time,
@@ -54,6 +60,161 @@ use crate::viewer::{self, HasViewer, ViewerHandle, ViewerMode, ViewerOverlay};
 
 /// Height of the SIMULATE transport bar, in logical pixels.
 const TRANSPORT_HEIGHT: f32 = 76.0;
+
+/// One editable setup-sheet field.
+///
+/// Every field has a stable text input; structural choices (shape, dialect,
+/// stock source, rule severity) are buttons instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SetupField {
+    ConfigPath,
+    StockOrigin(usize),
+    StockSize(usize),
+    ToolName,
+    ToolDiameter,
+    ToolFlutes,
+    ToolStickout,
+    ToolFluteLength,
+    ToolTipAngle,
+    ToolCornerRadius,
+    ToolShankDiameter,
+    ToolHolderDiameter,
+    MaterialChiploadMin,
+    MaterialChiploadMax,
+    MaterialSurfaceSpeedMin,
+    MaterialSurfaceSpeedMax,
+    MaterialMaxMrr,
+    MaterialNotes,
+    MachineTravelMin(usize),
+    MachineTravelMax(usize),
+    MachineMaxFeed,
+    MachineMaxSpindle,
+    MachineRapid,
+    ToleranceArcRadius,
+    ToleranceMinSegment,
+    ToleranceHoleXy,
+    ToleranceClearance,
+    SimCellMm,
+    SimMaxCells,
+    SimRapidRate,
+    SimToolChangePause,
+    SimAssumedDiameter,
+    RuleThresholdKey,
+    RuleThresholdValue,
+    ExportPath,
+}
+
+impl SetupField {
+    const ALL: &'static [Self] = &[
+        Self::ConfigPath,
+        Self::StockOrigin(0),
+        Self::StockOrigin(1),
+        Self::StockOrigin(2),
+        Self::StockSize(0),
+        Self::StockSize(1),
+        Self::StockSize(2),
+        Self::ToolName,
+        Self::ToolDiameter,
+        Self::ToolFlutes,
+        Self::ToolStickout,
+        Self::ToolFluteLength,
+        Self::ToolTipAngle,
+        Self::ToolCornerRadius,
+        Self::ToolShankDiameter,
+        Self::ToolHolderDiameter,
+        Self::MaterialChiploadMin,
+        Self::MaterialChiploadMax,
+        Self::MaterialSurfaceSpeedMin,
+        Self::MaterialSurfaceSpeedMax,
+        Self::MaterialMaxMrr,
+        Self::MaterialNotes,
+        Self::MachineTravelMin(0),
+        Self::MachineTravelMin(1),
+        Self::MachineTravelMin(2),
+        Self::MachineTravelMax(0),
+        Self::MachineTravelMax(1),
+        Self::MachineTravelMax(2),
+        Self::MachineMaxFeed,
+        Self::MachineMaxSpindle,
+        Self::MachineRapid,
+        Self::ToleranceArcRadius,
+        Self::ToleranceMinSegment,
+        Self::ToleranceHoleXy,
+        Self::ToleranceClearance,
+        Self::SimCellMm,
+        Self::SimMaxCells,
+        Self::SimRapidRate,
+        Self::SimToolChangePause,
+        Self::SimAssumedDiameter,
+        Self::RuleThresholdKey,
+        Self::RuleThresholdValue,
+        Self::ExportPath,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::ConfigPath => "CONFIG TOML",
+            Self::StockOrigin(0) => "ORIGIN X",
+            Self::StockOrigin(1) => "ORIGIN Y",
+            Self::StockOrigin(2) => "ORIGIN Z",
+            Self::StockSize(0) => "SIZE X",
+            Self::StockSize(1) => "SIZE Y",
+            Self::StockSize(2) => "SIZE Z",
+            Self::ToolName => "NAME",
+            Self::ToolDiameter => "DIAMETER MM",
+            Self::ToolFlutes => "FLUTES",
+            Self::ToolStickout => "STICKOUT MM",
+            Self::ToolFluteLength => "FLUTE LENGTH",
+            Self::ToolTipAngle => "TIP ANGLE DEG",
+            Self::ToolCornerRadius => "CORNER RADIUS",
+            Self::ToolShankDiameter => "SHANK DIA MM",
+            Self::ToolHolderDiameter => "HOLDER DIA MM",
+            Self::MaterialChiploadMin => "CHIPLOAD MIN",
+            Self::MaterialChiploadMax => "CHIPLOAD MAX",
+            Self::MaterialSurfaceSpeedMin => "SURFACE SPD MIN",
+            Self::MaterialSurfaceSpeedMax => "SURFACE SPD MAX",
+            Self::MaterialMaxMrr => "MAX MRR",
+            Self::MaterialNotes => "NOTES",
+            Self::MachineTravelMin(0) => "TRAVEL MIN X",
+            Self::MachineTravelMin(1) => "TRAVEL MIN Y",
+            Self::MachineTravelMin(2) => "TRAVEL MIN Z",
+            Self::MachineTravelMax(0) => "TRAVEL MAX X",
+            Self::MachineTravelMax(1) => "TRAVEL MAX Y",
+            Self::MachineTravelMax(2) => "TRAVEL MAX Z",
+            Self::MachineMaxFeed => "MAX FEED MM/MIN",
+            Self::MachineMaxSpindle => "MAX SPINDLE RPM",
+            Self::MachineRapid => "RAPID MM/MIN",
+            Self::ToleranceArcRadius => "ARC RADIUS MM",
+            Self::ToleranceMinSegment => "MIN SEGMENT MM",
+            Self::ToleranceHoleXy => "HOLE XY MM",
+            Self::ToleranceClearance => "CLEARANCE MM",
+            Self::SimCellMm => "CELL MM",
+            Self::SimMaxCells => "MAX CELLS",
+            Self::SimRapidRate => "RAPID MM/MIN",
+            Self::SimToolChangePause => "TOOL CHANGE S",
+            Self::SimAssumedDiameter => "ASSUMED DIA MM",
+            Self::RuleThresholdKey => "THRESHOLD KEY",
+            Self::RuleThresholdValue => "THRESHOLD VALUE",
+            Self::ExportPath => "EXPORT PATH",
+            Self::StockOrigin(_) => "ORIGIN",
+            Self::StockSize(_) => "SIZE",
+            Self::MachineTravelMin(_) => "TRAVEL MIN",
+            Self::MachineTravelMax(_) => "TRAVEL MAX",
+        }
+    }
+
+    fn placeholder(self) -> &'static str {
+        match self {
+            Self::ConfigPath => "/path/to/config.toml",
+            Self::ToolName => "optional",
+            Self::MaterialNotes => "optional notes",
+            Self::RuleThresholdKey => "e.g. clearance_mm",
+            Self::RuleThresholdValue => "number",
+            Self::ExportPath => "nca-report.json",
+            _ => "empty = unknown",
+        }
+    }
+}
 
 /// One active simulation and the data the shell needs to paint it.
 struct SimSession {
@@ -108,6 +269,9 @@ pub struct NcaShell {
     program_scroll: UniformListScrollHandle,
     program_search_input: Entity<InputState>,
     browser_path_input: Entity<InputState>,
+    setup_inputs: BTreeMap<SetupField, Entity<InputState>>,
+    pending_setup_sync: bool,
+    export_open: bool,
     browser: Option<FileBrowser>,
     legend_open: bool,
     load_error: Option<String>,
@@ -211,6 +375,7 @@ impl NcaShell {
                 .clean_on_escape()
                 .submit_on_enter(true)
         });
+        let setup_inputs = create_setup_inputs(window, cx);
         let scrub_slider = cx.new(|_| {
             SliderState::new()
                 .min(0.0)
@@ -277,6 +442,19 @@ impl NcaShell {
                 },
             ),
         );
+        for (field, input) in setup_inputs.clone() {
+            subscriptions.push(
+                cx.subscribe(&input, move |this, input, event, cx| match event {
+                    InputEvent::Change => {
+                        this.setup_field_changed(field, input.read(cx).value().to_string(), cx);
+                    }
+                    InputEvent::PressEnter { .. } | InputEvent::Blur => {
+                        this.commit_setup_field(field, cx);
+                    }
+                    InputEvent::Focus => {}
+                }),
+            );
+        }
 
         let mono = cx.theme().mono_font_family.clone();
         let mut shell = Self {
@@ -286,6 +464,9 @@ impl NcaShell {
             program_scroll: UniformListScrollHandle::new(),
             program_search_input,
             browser_path_input,
+            setup_inputs,
+            pending_setup_sync: false,
+            export_open: review.export,
             browser: None,
             legend_open: false,
             load_error: None,
@@ -334,6 +515,10 @@ impl NcaShell {
         if review.analyze && shell.analysis_panel.is_none() {
             shell.analysis_panel = Some(AnalysisPanel::Diagnostics);
         }
+        if review.setup {
+            shell.state.settings_open = true;
+        }
+        shell.sync_setup_inputs(window, cx);
         if let Some(path) = open_path {
             shell.load_initial(path);
         }
@@ -366,11 +551,15 @@ impl NcaShell {
         let program = loaded.program.as_ref().cloned().ok_or_else(|| {
             "The file has parse errors, so there is no geometry to simulate.".to_string()
         })?;
-        let stock = loaded
-            .stock
-            .ok_or_else(|| "No stock box could be inferred for this file.".to_string())?;
-        let tools = ToolTable::resolve(&self.state.config.tools, &program.tool_hints);
-        let simulation = Simulation::new(&program, stock, &tools, &SimConfig::default())
+        let inferred = loaded.stock;
+        let stock = self
+            .state
+            .setup
+            .effective_stock(inferred)
+            .ok_or_else(|| "No stock box is available for this file.".to_string())?;
+        let tools = self.state.resolved_tools(&program);
+        let config = self.state.setup.sim.sanitized();
+        let simulation = Simulation::new(&program, stock, &tools, &config)
             .map_err(|error| format!("Cannot simulate this program: {error}"))?;
         let segment_lines = Arc::new(SegmentLines::from_program(&program));
         self.sim = Some(SimSession {
@@ -430,6 +619,7 @@ impl NcaShell {
 
     /// Drops playback and rebuilds if SIMULATE is still the active mode.
     fn program_changed(&mut self, cx: &mut Context<Self>) {
+        self.pending_setup_sync = true;
         self.cancel_seek();
         self.sim = None;
         self.mesh_cache.clear();
@@ -488,6 +678,7 @@ impl NcaShell {
     /// rules stay at their defaults, and `Generic` is explicitly labeled as an
     /// assumed dialect.
     fn begin_analysis(&mut self, cx: &mut Context<Self>) {
+        self.state.setup.export_status = None;
         self.analysis_run = self.analysis_run.wrapping_add(1);
         if let Some(worker) = self.analysis_worker.as_mut() {
             worker.cancel(self.analysis_run);
@@ -518,8 +709,12 @@ impl NcaShell {
         };
         let file_name = loaded.name.clone();
         let source = Arc::clone(&loaded.source);
-        let mut config = AnalysisConfig::default();
-        config.tools = ToolTable::resolve(&self.state.config.tools, &program.tool_hints);
+        let tools = self.state.resolved_tools(&program);
+        let config = self.state.setup.analysis_config(tools);
+        let dialect = DialectChoice {
+            dialect: self.state.setup.dialect,
+            assumed: self.state.setup.dialect_assumed,
+        };
 
         if self.analysis_worker.is_none() {
             match AnalysisWorker::spawn() {
@@ -537,7 +732,7 @@ impl NcaShell {
         let result = self
             .analysis_worker
             .as_mut()
-            .map(|worker| worker.request(generation, program, file_name, source, config));
+            .map(|worker| worker.request(generation, program, file_name, source, config, dialect));
         match result {
             Some(Ok(())) => {}
             Some(Err(message)) => {
@@ -1053,9 +1248,10 @@ impl NcaShell {
             .loaded
             .as_ref()
             .and_then(|loaded| {
-                loaded.program.as_ref().map(|program| {
-                    ToolTable::resolve(&self.state.config.tools, &program.tool_hints)
-                })
+                loaded
+                    .program
+                    .as_ref()
+                    .map(|program| self.state.resolved_tools(program))
             })
             .unwrap_or_default()
     }
@@ -1167,7 +1363,13 @@ impl NcaShell {
         };
         let diameter_text = self.tool_diameter_input.read(cx).value().to_string();
         let flutes_text = self.tool_flutes_input.read(cx).value().to_string();
-        let existing = self.state.config.tools.get(number);
+        let Some(hash) = self.state.loaded_hash().map(str::to_string) else {
+            self.tool_edit_error = Some("No program is open.".to_string());
+            cx.notify();
+            return;
+        };
+        let table = self.state.config.tools_for(&hash);
+        let existing = table.get(number);
         let tool = match parse_tool_edit(
             number,
             &diameter_text,
@@ -1182,9 +1384,11 @@ impl NcaShell {
                 return;
             }
         };
-        self.state.config.set_tool(tool);
+        store_overlay_tool(&mut self.state.config, &hash, tool);
+        self.state.sync_setup_program();
         self.tool_popover_open = false;
         self.tool_edit_error = None;
+        self.sync_setup_inputs(window, cx);
         if self.state.mode == AppMode::Simulate {
             self.rebuild_after_tool_edit(window, cx);
         } else {
@@ -1222,7 +1426,9 @@ impl NcaShell {
         match read_program(&path) {
             Ok(file) => {
                 self.program_generation = self.program_generation.wrapping_add(1);
-                self.state.adopt(LoadedProgram::from_file(file));
+                let dialect = self.state.setup.dialect;
+                self.state.adopt(LoadedProgram::from_file(file, dialect));
+                self.pending_setup_sync = true;
                 self.program_scroll.scroll_to_item(0, ScrollStrategy::Top);
                 self.viewer.fit();
             }
@@ -1237,19 +1443,24 @@ impl NcaShell {
         self.state.loading = true;
         cx.notify();
         let task_path = path.clone();
+        let dialect = self.state.setup.dialect;
         self._load_task = Some(cx.spawn(async move |weak, cx| {
+            let task_dialect = dialect;
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     match read_program(&task_path) {
-                        Ok(file) => Ok(LoadedProgram::from_file(file)),
+                        Ok(file) => Ok(LoadedProgram::from_file(file, task_dialect)),
                         Err(error) => Err(error.to_string()),
                     }
                 })
                 .await;
             let _ = weak.update(cx, |shell, cx| {
                 match result {
-                    Ok(loaded) => {
+                    Ok(mut loaded) => {
+                        if shell.state.setup.dialect != dialect {
+                            loaded.reparse(shell.state.setup.dialect);
+                        }
                         shell.program_generation = shell.program_generation.wrapping_add(1);
                         shell.state.adopt(loaded);
                         shell.program_scroll.scroll_to_item(0, ScrollStrategy::Top);
@@ -1412,6 +1623,706 @@ impl NcaShell {
                 cx.notify();
             }
         }
+    }
+
+    /// Reads one setup input, when it exists.
+    fn setup_value(&self, field: SetupField, cx: &Context<Self>) -> String {
+        self.setup_inputs
+            .get(&field)
+            .map(|input| input.read(cx).value().to_string())
+            .unwrap_or_default()
+    }
+
+    /// Updates one setup input from its model value.
+    fn set_setup_value(
+        &self,
+        field: SetupField,
+        value: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(input) = self.setup_inputs.get(&field).cloned() {
+            input.update(cx, |input, cx| input.set_value(value, window, cx));
+        }
+    }
+
+    fn sync_setup_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let inferred = self.state.loaded.as_ref().and_then(|loaded| loaded.stock);
+        let resolved = self.resolved_tools();
+        let selected_tool = self
+            .state
+            .setup
+            .selected_tool
+            .and_then(|number| resolved.get(number).cloned());
+        let (origin, size) = self.state.setup.stock_values(inferred.as_ref());
+        let material = self.state.setup.analysis.material.clone();
+        let machine = self.state.setup.analysis.machine.clone();
+        let tolerances = self.state.setup.analysis.tolerances;
+        let sim = self.state.setup.sim.clone();
+        for &field in SetupField::ALL {
+            let value = match field {
+                SetupField::ConfigPath => self.state.setup.config_path_text.clone(),
+                SetupField::ExportPath => self.state.setup.export_path.clone(),
+                SetupField::StockOrigin(axis) => format_number(origin[axis]),
+                SetupField::StockSize(axis) => format_number(size[axis]),
+                SetupField::ToolName => selected_tool
+                    .as_ref()
+                    .and_then(|tool| tool.name.clone())
+                    .unwrap_or_default(),
+                SetupField::ToolDiameter => {
+                    format_optional(selected_tool.as_ref().and_then(|tool| tool.diameter_mm))
+                }
+                SetupField::ToolFlutes => selected_tool
+                    .as_ref()
+                    .and_then(|tool| tool.flutes)
+                    .map_or_else(String::new, |value| value.to_string()),
+                SetupField::ToolStickout => {
+                    format_optional(selected_tool.as_ref().and_then(|tool| tool.stickout_mm))
+                }
+                SetupField::ToolFluteLength => {
+                    format_optional(selected_tool.as_ref().and_then(|tool| tool.flute_length_mm))
+                }
+                SetupField::ToolTipAngle => {
+                    format_optional(selected_tool.as_ref().and_then(|tool| tool.tip_angle_deg))
+                }
+                SetupField::ToolCornerRadius => format_optional(
+                    selected_tool
+                        .as_ref()
+                        .and_then(|tool| tool.corner_radius_mm),
+                ),
+                SetupField::ToolShankDiameter => format_optional(
+                    selected_tool
+                        .as_ref()
+                        .and_then(|tool| tool.shank_diameter_mm),
+                ),
+                SetupField::ToolHolderDiameter => format_optional(
+                    selected_tool
+                        .as_ref()
+                        .and_then(|tool| tool.holder_diameter_mm),
+                ),
+                SetupField::MaterialChiploadMin => {
+                    format_optional(material.as_ref().and_then(|preset| preset.chipload_min_mm))
+                }
+                SetupField::MaterialChiploadMax => {
+                    format_optional(material.as_ref().and_then(|preset| preset.chipload_max_mm))
+                }
+                SetupField::MaterialSurfaceSpeedMin => format_optional(
+                    material
+                        .as_ref()
+                        .and_then(|preset| preset.surface_speed_min_mpm),
+                ),
+                SetupField::MaterialSurfaceSpeedMax => format_optional(
+                    material
+                        .as_ref()
+                        .and_then(|preset| preset.surface_speed_max_mpm),
+                ),
+                SetupField::MaterialMaxMrr => {
+                    format_optional(material.as_ref().and_then(|preset| preset.max_mrr_mm3_min))
+                }
+                SetupField::MaterialNotes => material
+                    .as_ref()
+                    .map(|preset| preset.notes.clone())
+                    .unwrap_or_default(),
+                SetupField::MachineTravelMin(axis) => {
+                    format_optional(machine.as_ref().map(|machine| machine.travel_min_mm[axis]))
+                }
+                SetupField::MachineTravelMax(axis) => {
+                    format_optional(machine.as_ref().map(|machine| machine.travel_max_mm[axis]))
+                }
+                SetupField::MachineMaxFeed => {
+                    format_optional(machine.as_ref().and_then(|machine| machine.max_feed_mm_min))
+                }
+                SetupField::MachineMaxSpindle => {
+                    format_optional(machine.as_ref().and_then(|machine| machine.max_spindle_rpm))
+                }
+                SetupField::MachineRapid => format_optional(
+                    machine
+                        .as_ref()
+                        .and_then(|machine| machine.rapid_rate_mm_min),
+                ),
+                SetupField::ToleranceArcRadius => format_number(tolerances.arc_radius_mm),
+                SetupField::ToleranceMinSegment => format_number(tolerances.min_segment_mm),
+                SetupField::ToleranceHoleXy => format_number(tolerances.hole_xy_mm),
+                SetupField::ToleranceClearance => format_number(tolerances.clearance_mm),
+                SetupField::SimCellMm => format_number(sim.cell_mm),
+                SetupField::SimMaxCells => sim.max_cells.to_string(),
+                SetupField::SimRapidRate => format_number(sim.rapid_rate_mm_min),
+                SetupField::SimToolChangePause => format_number(sim.tool_change_pause_s),
+                SetupField::SimAssumedDiameter => format_optional(sim.assumed_tool_diameter_mm),
+                SetupField::RuleThresholdKey | SetupField::RuleThresholdValue => String::new(),
+            };
+            // Transient rule-entry fields are cleared, never seeded.
+            self.set_setup_value(field, value, window, cx);
+        }
+    }
+
+    /// Live text changes: only the two path drafts update as the operator types.
+    fn setup_field_changed(&mut self, field: SetupField, value: String, cx: &mut Context<Self>) {
+        match field {
+            SetupField::ConfigPath => self.state.setup.config_path_text = value,
+            SetupField::ExportPath => {
+                self.state.setup.export_path = value;
+                self.state.setup.export_status = None;
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// Commits one field on Enter or focus loss.
+    fn commit_setup_field(&mut self, field: SetupField, cx: &mut Context<Self>) {
+        let raw = self.setup_value(field, cx);
+        let inferred = self.state.loaded.as_ref().and_then(|loaded| loaded.stock);
+        let mut tool_edit = false;
+        match field {
+            SetupField::ConfigPath | SetupField::ExportPath => {
+                self.setup_field_changed(field, raw, cx);
+                return;
+            }
+            SetupField::StockOrigin(axis) => match parse_optional_number(&raw, field.label()) {
+                Ok(Some(value)) => {
+                    if self.state.setup.analysis.stock.is_none() {
+                        self.state.setup.set_stock_explicit(inferred.as_ref());
+                    }
+                    self.state.setup.set_stock_axis(true, axis, value);
+                }
+                Ok(None) => {
+                    self.state.setup.message =
+                        Some(StatusMessage::error("Stock origin values cannot be empty."));
+                }
+                Err(message) => self.state.setup.message = Some(StatusMessage::error(message)),
+            },
+            SetupField::StockSize(axis) => match parse_optional_positive(&raw, field.label()) {
+                Ok(Some(value)) => {
+                    if self.state.setup.analysis.stock.is_none() {
+                        self.state.setup.set_stock_explicit(inferred.as_ref());
+                    }
+                    self.state.setup.set_stock_axis(false, axis, value);
+                }
+                Ok(None) => {
+                    self.state.setup.message =
+                        Some(StatusMessage::error("Stock size values cannot be empty."));
+                }
+                Err(message) => self.state.setup.message = Some(StatusMessage::error(message)),
+            },
+            SetupField::ToolName
+            | SetupField::ToolDiameter
+            | SetupField::ToolFlutes
+            | SetupField::ToolStickout
+            | SetupField::ToolFluteLength
+            | SetupField::ToolTipAngle
+            | SetupField::ToolCornerRadius
+            | SetupField::ToolShankDiameter
+            | SetupField::ToolHolderDiameter => {
+                tool_edit = true;
+                self.commit_tool_field(field, &raw);
+            }
+            SetupField::MaterialChiploadMin
+            | SetupField::MaterialChiploadMax
+            | SetupField::MaterialSurfaceSpeedMin
+            | SetupField::MaterialSurfaceSpeedMax
+            | SetupField::MaterialMaxMrr => {
+                let material_field = match field {
+                    SetupField::MaterialChiploadMin => MaterialField::ChiploadMin,
+                    SetupField::MaterialChiploadMax => MaterialField::ChiploadMax,
+                    SetupField::MaterialSurfaceSpeedMin => MaterialField::SurfaceSpeedMin,
+                    SetupField::MaterialSurfaceSpeedMax => MaterialField::SurfaceSpeedMax,
+                    _ => MaterialField::MaxMrr,
+                };
+                match parse_optional_positive(&raw, field.label()) {
+                    Ok(value) => self.state.setup.set_material_value(material_field, value),
+                    Err(message) => {
+                        self.state.setup.message = Some(StatusMessage::error(message));
+                    }
+                }
+            }
+            SetupField::MaterialNotes => {
+                self.state.setup.set_material_notes(raw);
+            }
+            SetupField::MachineTravelMin(axis) | SetupField::MachineTravelMax(axis) => {
+                let machine_field = match field {
+                    SetupField::MachineTravelMin(axis) => MachineField::TravelMin(axis),
+                    SetupField::MachineTravelMax(axis) => MachineField::TravelMax(axis),
+                    _ => MachineField::TravelMax(axis),
+                };
+                match parse_optional_number(&raw, field.label()) {
+                    Ok(Some(value)) => {
+                        if self.state.setup.analysis.machine.is_none() {
+                            self.state
+                                .setup
+                                .set_machine_enabled(true, inferred.as_ref());
+                        }
+                        self.state
+                            .setup
+                            .set_machine_value(machine_field, Some(value));
+                    }
+                    Ok(None) => {
+                        self.state.setup.message = Some(StatusMessage::error(
+                            "Machine travel values cannot be empty.",
+                        ));
+                    }
+                    Err(message) => {
+                        self.state.setup.message = Some(StatusMessage::error(message));
+                    }
+                }
+            }
+            SetupField::MachineMaxFeed
+            | SetupField::MachineMaxSpindle
+            | SetupField::MachineRapid => {
+                let machine_field = match field {
+                    SetupField::MachineMaxFeed => MachineField::MaxFeed,
+                    SetupField::MachineMaxSpindle => MachineField::MaxSpindle,
+                    _ => MachineField::Rapid,
+                };
+                match parse_optional_positive(&raw, field.label()) {
+                    Ok(Some(value)) => {
+                        if self.state.setup.analysis.machine.is_none() {
+                            self.state
+                                .setup
+                                .set_machine_enabled(true, inferred.as_ref());
+                        }
+                        self.state
+                            .setup
+                            .set_machine_value(machine_field, Some(value));
+                    }
+                    Ok(None) => {
+                        self.state.setup.set_machine_value(machine_field, None);
+                    }
+                    Err(message) => {
+                        self.state.setup.message = Some(StatusMessage::error(message));
+                    }
+                }
+            }
+            SetupField::ToleranceArcRadius
+            | SetupField::ToleranceMinSegment
+            | SetupField::ToleranceHoleXy
+            | SetupField::ToleranceClearance => {
+                let tolerance = match field {
+                    SetupField::ToleranceArcRadius => ToleranceField::ArcRadius,
+                    SetupField::ToleranceMinSegment => ToleranceField::MinSegment,
+                    SetupField::ToleranceHoleXy => ToleranceField::HoleXy,
+                    _ => ToleranceField::Clearance,
+                };
+                match parse_non_negative(&raw, field.label()) {
+                    Ok(value) => self.state.setup.set_tolerance(tolerance, value),
+                    Err(message) => {
+                        self.state.setup.message = Some(StatusMessage::error(message));
+                    }
+                }
+            }
+            SetupField::SimCellMm
+            | SetupField::SimMaxCells
+            | SetupField::SimRapidRate
+            | SetupField::SimToolChangePause
+            | SetupField::SimAssumedDiameter => {
+                let sim_field = match field {
+                    SetupField::SimCellMm => SimField::CellMm,
+                    SetupField::SimMaxCells => SimField::MaxCells,
+                    SetupField::SimRapidRate => SimField::RapidRate,
+                    SetupField::SimToolChangePause => SimField::ToolChangePause,
+                    _ => SimField::AssumedDiameter,
+                };
+                let parsed = match sim_field {
+                    SimField::MaxCells => {
+                        parse_optional_count(&raw, field.label()).map(|value| value.map(f64::from))
+                    }
+                    SimField::ToolChangePause => parse_optional_number(&raw, field.label()),
+                    _ => parse_optional_positive(&raw, field.label()),
+                };
+                match parsed {
+                    Ok(value) => self.state.setup.set_sim_value(sim_field, value),
+                    Err(message) => {
+                        self.state.setup.message = Some(StatusMessage::error(message));
+                    }
+                }
+            }
+            SetupField::RuleThresholdKey | SetupField::RuleThresholdValue => return,
+        }
+        let sim_changed = matches!(
+            field,
+            SetupField::SimCellMm
+                | SetupField::SimMaxCells
+                | SetupField::SimRapidRate
+                | SetupField::SimToolChangePause
+                | SetupField::SimAssumedDiameter
+        );
+        let analysis_changed = !sim_changed;
+        self.pending_setup_sync = true;
+        if sim_changed {
+            self.program_changed(cx);
+            return;
+        }
+        if analysis_changed {
+            if self.state.mode == AppMode::Simulate {
+                self.program_changed(cx);
+            }
+            self.begin_analysis(cx);
+        }
+        if tool_edit {
+            self.state.sync_setup_program();
+        }
+        cx.notify();
+    }
+
+    /// Edits one field of the selected tool overlay.
+    fn commit_tool_field(&mut self, field: SetupField, raw: &str) {
+        let Some(number) = self.state.setup.selected_tool else {
+            self.state.setup.message = Some(StatusMessage::error(
+                "Select a tool in the inventory first.",
+            ));
+            return;
+        };
+        let Some(hash) = self.state.loaded_hash().map(str::to_string) else {
+            self.state.setup.message = Some(StatusMessage::error("No program is open."));
+            return;
+        };
+        let mut tool = overlay_tool(&self.state.config, &hash, number);
+        let tool_field = match field {
+            SetupField::ToolName => ToolField::Name,
+            SetupField::ToolDiameter => ToolField::Diameter,
+            SetupField::ToolFlutes => ToolField::Flutes,
+            SetupField::ToolStickout => ToolField::Stickout,
+            SetupField::ToolFluteLength => ToolField::FluteLength,
+            SetupField::ToolTipAngle => ToolField::TipAngle,
+            SetupField::ToolCornerRadius => ToolField::CornerRadius,
+            SetupField::ToolShankDiameter => ToolField::ShankDiameter,
+            SetupField::ToolHolderDiameter => ToolField::HolderDiameter,
+            _ => return,
+        };
+        match apply_tool_field(&mut tool, tool_field, raw) {
+            Ok(()) => {
+                store_overlay_tool(&mut self.state.config, &hash, tool);
+                self.state.setup.message = None;
+            }
+            Err(message) => {
+                self.state.setup.message = Some(StatusMessage::error(message));
+            }
+        }
+    }
+
+    /// Sets the selected tool's shape.
+    fn set_tool_shape(&mut self, shape: ToolShape, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(number) = self.state.setup.selected_tool else {
+            return;
+        };
+        let Some(hash) = self.state.loaded_hash().map(str::to_string) else {
+            return;
+        };
+        let mut tool = overlay_tool(&self.state.config, &hash, number);
+        tool.shape = shape;
+        if shape == ToolShape::Unknown {
+            tool.sources.remove(&ToolField::Shape);
+        } else {
+            tool.sources.insert(ToolField::Shape, FieldSource::Config);
+        }
+        store_overlay_tool(&mut self.state.config, &hash, tool);
+        self.after_analysis_edit(window, cx);
+    }
+
+    /// Sets the selected tool's handedness.
+    fn set_tool_handedness(
+        &mut self,
+        right_hand: Option<bool>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(number) = self.state.setup.selected_tool else {
+            return;
+        };
+        let Some(hash) = self.state.loaded_hash().map(str::to_string) else {
+            return;
+        };
+        let mut tool = overlay_tool(&self.state.config, &hash, number);
+        let text = match right_hand {
+            Some(true) => "right",
+            Some(false) => "left",
+            None => "",
+        };
+        if let Err(message) = apply_tool_field(&mut tool, ToolField::RightHand, text) {
+            self.state.setup.message = Some(StatusMessage::error(message));
+            cx.notify();
+            return;
+        }
+        store_overlay_tool(&mut self.state.config, &hash, tool);
+        self.after_analysis_edit(window, cx);
+    }
+
+    /// Toggles the current material's coolant requirement.
+    fn toggle_coolant(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let required = self
+            .state
+            .setup
+            .analysis
+            .material
+            .as_ref()
+            .is_some_and(|preset| preset.requires_coolant);
+        self.state.setup.set_requires_coolant(!required);
+        self.after_analysis_edit(window, cx);
+    }
+
+    /// Toggles manual-spindle mode on configured machine limits.
+    fn toggle_spindle_manual(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let manual = self
+            .state
+            .setup
+            .analysis
+            .machine
+            .as_ref()
+            .is_some_and(|machine| machine.spindle_manual);
+        self.state.setup.set_spindle_manual(!manual);
+        self.after_analysis_edit(window, cx);
+    }
+
+    /// Toggles crash preview and rebuilds the simulation.
+    fn toggle_crash_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let enabled = self.state.setup.sim.crash_preview;
+        self.state.setup.set_crash_preview(!enabled);
+        self.sync_setup_inputs(window, cx);
+        if self.state.mode == AppMode::Simulate {
+            self.rebuild_after_tool_edit(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Loads the TOML path typed into the setup sheet.
+    fn load_config_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let raw = self.setup_value(SetupField::ConfigPath, cx);
+        let text = raw.trim();
+        if text.is_empty() {
+            self.state.setup.message =
+                Some(StatusMessage::error("Enter a configuration path first."));
+            cx.notify();
+            return;
+        }
+        self.state.setup.config_path_text = text.to_string();
+        let path = crate::setup::expand_home(text);
+        match load_config(&path) {
+            Ok(loaded) => self.apply_loaded_config(path, loaded, window, cx),
+            Err(error) => {
+                let message = error.to_string();
+                self.state.setup.message = Some(StatusMessage::error(format!(
+                    "CONFIG NOT LOADED: {message}"
+                )));
+                self.load_error = Some(format!("CONFIG NOT LOADED: {message}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Applies an already-parsed TOML configuration to the current session.
+    fn apply_loaded_config(
+        &mut self,
+        path: PathBuf,
+        loaded: nc_analysis::LoadedConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let tool_count = loaded.analysis.tools.len();
+        let stock_text = match loaded.analysis.stock {
+            Some(_) => "explicit stock",
+            None => "inferred stock",
+        };
+        let dialect = loaded.dialect;
+        let assumed = loaded.dialect_assumed;
+        let tools = self.state.setup.apply_loaded(loaded);
+        if let Some(hash) = self.state.loaded_hash().map(str::to_string) {
+            self.state.config.set_tools_for(&hash, tools);
+        }
+        let name = file_name_of(&path);
+        self.state.setup.config_name = Some(name.clone());
+        self.reparse_current(dialect, cx);
+        self.state.setup.message = Some(StatusMessage::info(format!(
+            "LOADED {name}: {}{}, {stock_text}, {tool_count} configured tools.",
+            dialect.label(),
+            if assumed { " (assumed)" } else { "" },
+        )));
+        self.load_error = None;
+        self.sync_setup_inputs(window, cx);
+        self.begin_analysis(cx);
+    }
+
+    /// Re-parses the current source with `dialect` and rebuilds derived state.
+    fn reparse_current(&mut self, dialect: Dialect, cx: &mut Context<Self>) {
+        let Some(mut loaded) = self.state.loaded.take() else {
+            return;
+        };
+        loaded.reparse(dialect);
+        self.program_generation = self.program_generation.wrapping_add(1);
+        self.state.loaded = Some(loaded);
+        self.state.selected_line = None;
+        self.state.sync_setup_program();
+        self.program_changed(cx);
+    }
+
+    /// Selects a dialect and re-parses, re-analyzes, and rebuilds simulation.
+    fn set_dialect_action(
+        &mut self,
+        dialect: Dialect,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.setup.dialect == dialect && !self.state.setup.dialect_assumed {
+            return;
+        }
+        self.state.setup.set_dialect(dialect);
+        self.reparse_current(dialect, cx);
+        self.sync_setup_inputs(window, cx);
+        self.begin_analysis(cx);
+    }
+
+    /// Writes the current report to the export path.
+    fn export_action(&mut self, cx: &mut Context<Self>) {
+        let Some(report) = self.analysis.report().cloned() else {
+            self.state.setup.export_status =
+                Some(StatusMessage::error("Run analysis before exporting."));
+            cx.notify();
+            return;
+        };
+        let path_text = self.setup_value(SetupField::ExportPath, cx);
+        self.state.setup.export_path = path_text.clone();
+        match write_export(&report, &path_text, self.state.setup.export_format) {
+            Ok(outcome) => {
+                self.state.setup.export_status = Some(StatusMessage::info(format!(
+                    "WROTE {} ({} bytes)",
+                    outcome.path.display(),
+                    outcome.bytes
+                )));
+            }
+            Err(message) => {
+                self.state.setup.export_status = Some(StatusMessage::error(message));
+            }
+        }
+        cx.notify();
+    }
+
+    fn after_analysis_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_setup_inputs(window, cx);
+        if self.state.mode == AppMode::Simulate {
+            self.rebuild_after_tool_edit(window, cx);
+        }
+        self.begin_analysis(cx);
+    }
+
+    /// Switches explicit/inferred stock and re-runs analysis and simulation.
+    fn stock_mode_changed(&mut self, explicit: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let inferred = self.state.loaded.as_ref().and_then(|loaded| loaded.stock);
+        if explicit {
+            self.state.setup.set_stock_explicit(inferred.as_ref());
+        } else {
+            self.state.setup.set_stock_inferred();
+        }
+        self.after_analysis_edit(window, cx);
+    }
+
+    /// Enables or disables machine limits.
+    fn machine_mode_changed(&mut self, enabled: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let inferred = self.state.loaded.as_ref().and_then(|loaded| loaded.stock);
+        self.state
+            .setup
+            .set_machine_enabled(enabled, inferred.as_ref());
+        self.after_analysis_edit(window, cx);
+    }
+
+    /// Chooses a built-in material preset or clears it.
+    fn material_preset_changed(
+        &mut self,
+        name: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.setup.set_material_preset(name);
+        self.after_analysis_edit(window, cx);
+    }
+
+    /// Selects one inventory tool and seeds its fields.
+    fn select_tool(&mut self, number: u32, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.setup.selected_tool = Some(number);
+        self.sync_setup_inputs(window, cx);
+        cx.notify();
+    }
+
+    /// Selects one rule for threshold editing.
+    fn select_rule(&mut self, rule: String, cx: &mut Context<Self>) {
+        self.state.setup.selected_rule = Some(rule);
+        cx.notify();
+    }
+
+    /// Enables or disables one rule.
+    fn toggle_rule(&mut self, rule: String, window: &mut Window, cx: &mut Context<Self>) {
+        let settings = self.state.setup.rule_settings(&rule);
+        self.state.setup.set_rule_enabled(&rule, !settings.enabled);
+        self.state.setup.selected_rule = Some(rule);
+        self.after_analysis_edit(window, cx);
+    }
+
+    /// Cycles DEFAULT -> ERROR -> WARNING -> INFO -> DEFAULT.
+    fn cycle_rule_severity(&mut self, rule: String, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.state.setup.rule_settings(&rule).severity;
+        let next = match current {
+            None => Some(AnalysisSeverity::Error),
+            Some(AnalysisSeverity::Error) => Some(AnalysisSeverity::Warning),
+            Some(AnalysisSeverity::Warning) => Some(AnalysisSeverity::Info),
+            Some(AnalysisSeverity::Info) => None,
+        };
+        self.state.setup.set_rule_severity(&rule, next);
+        self.state.setup.selected_rule = Some(rule);
+        self.after_analysis_edit(window, cx);
+    }
+
+    /// Adds the threshold typed into the selected rule's key/value fields.
+    fn add_rule_threshold(&mut self, cx: &mut Context<Self>) {
+        let Some(rule) = self.state.setup.selected_rule.clone() else {
+            self.state.setup.message = Some(StatusMessage::error(
+                "Select a rule before adding a threshold.",
+            ));
+            cx.notify();
+            return;
+        };
+        let key = self.setup_value(SetupField::RuleThresholdKey, cx);
+        let value = self.setup_value(SetupField::RuleThresholdValue, cx);
+        if key.trim().is_empty() {
+            self.state.setup.message = Some(StatusMessage::error("Enter a threshold key."));
+            cx.notify();
+            return;
+        }
+        match parse_optional_number(&value, "Threshold") {
+            Ok(Some(value)) => {
+                self.state.setup.set_rule_threshold(&rule, &key, value);
+                self.pending_setup_sync = true;
+                self.begin_analysis(cx);
+            }
+            Ok(None) => {
+                self.state.setup.message = Some(StatusMessage::error("Enter a threshold value."));
+                cx.notify();
+            }
+            Err(message) => {
+                self.state.setup.message = Some(StatusMessage::error(message));
+                cx.notify();
+            }
+        }
+    }
+
+    fn remove_rule_threshold(&mut self, rule: String, key: String, cx: &mut Context<Self>) {
+        self.state.setup.remove_rule_threshold(&rule, &key);
+        self.begin_analysis(cx);
+    }
+
+    /// Switches export format, keeping the path only when it is not a default.
+    fn set_export_format(&mut self, format: ExportFormat, cx: &mut Context<Self>) {
+        let previous = self.state.setup.export_format;
+        if previous == format {
+            return;
+        }
+        let previous_default = previous.default_path();
+        if self.state.setup.export_path.trim().is_empty()
+            || self.state.setup.export_path == previous_default
+        {
+            self.state.setup.export_path = format.default_path().to_string();
+            self.pending_setup_sync = true;
+        }
+        self.state.setup.export_format = format;
+        self.state.setup.export_status = None;
+        cx.notify();
     }
 
     /// The clickable tool chip shared by the top bar and the SIMULATE HUD.
@@ -1617,14 +2528,16 @@ impl NcaShell {
 
         let settings = action_button(
             "bar-settings",
-            "SETTINGS",
+            "SETUP",
             true,
-            false,
+            self.state.settings_open,
             p,
             view.clone(),
-            move |shell, _, cx| {
+            move |shell, window, cx| {
                 shell.settings_focus = None;
                 shell.state.settings_open = true;
+                shell.export_open = false;
+                shell.sync_setup_inputs(window, cx);
                 cx.notify();
             },
         );
@@ -1646,7 +2559,19 @@ impl NcaShell {
             move |shell, _, cx| shell.begin_analysis(cx),
         );
         let analysis_chip = self.analysis_chip(p, view.clone());
-        let export = placeholder_button("bar-export", "EXPORT", p);
+        let export = action_button(
+            "bar-export",
+            "EXPORT",
+            true,
+            self.export_open,
+            p,
+            view.clone(),
+            move |shell, _, cx| {
+                shell.export_open = true;
+                shell.state.settings_open = false;
+                cx.notify();
+            },
+        );
         let tool_button = self.tool_chip_button("bar-tool", p, view.clone());
 
         let actions = h_flex()
@@ -2366,7 +3291,7 @@ impl NcaShell {
         );
 
         strip = strip.child(chip(&format!("{} LINES", self.state.line_count()), p));
-        let tools = loaded.map_or(0, LoadedProgram::tool_count);
+        let tools = self.state.setup.inventory.len();
         let tools_text = if tools == 1 {
             "1 TOOL".to_string()
         } else {
@@ -2374,24 +3299,40 @@ impl NcaShell {
         };
         strip = strip.child(chip(&tools_text, p));
 
-        if let Some(loaded) = loaded {
-            let stock_label = loaded.stock_label();
-            let tip = format!("{}\n{}", loaded.stock_size_text(), loaded.stock_basis());
-            strip = strip.child(
-                chip(stock_label, p)
-                    .id("status-stock")
-                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)),
-            );
-        }
-        strip = strip.child(chip("GENERIC ASSUMED", p).id("status-dialect").tooltip(
-            |window, cx| {
-                Tooltip::new(
-                    "No dialect is configured in v0.1, so parsing and analysis use \
-                         Generic semantics and label it assumed.",
-                )
-                .build(window, cx)
-            },
-        ));
+        let stock_label = self.state.stock_label();
+        let stock_tip = format!(
+            "{}\n{}",
+            self.state.stock_size_text(),
+            self.state.stock_basis_text()
+        );
+        strip = strip.child(
+            chip(stock_label, p)
+                .id("status-stock")
+                .tooltip(move |window, cx| Tooltip::new(stock_tip.clone()).build(window, cx)),
+        );
+        let dialect_label = if self.state.setup.dialect_assumed {
+            "GENERIC ASSUMED".to_string()
+        } else {
+            format!(
+                "DIALECT: {}",
+                self.state.setup.dialect.label().to_uppercase()
+            )
+        };
+        let dialect_tip = if self.state.setup.dialect_assumed {
+            "No dialect is configured, so parsing and analysis use Generic semantics and \
+             label the choice assumed."
+                .to_string()
+        } else {
+            format!(
+                "The setup sheet selected the {} dialect for parsing and analysis.",
+                self.state.setup.dialect.label()
+            )
+        };
+        strip = strip.child(
+            chip(&dialect_label, p)
+                .id("status-dialect")
+                .tooltip(move |window, cx| Tooltip::new(dialect_tip.clone()).build(window, cx)),
+        );
 
         let parse = self.state.parse_state();
         let parse_color = match parse {
@@ -2901,7 +3842,6 @@ impl NcaShell {
                     .gap_2()
                     .child(section_label("COVERAGE", p))
                     .child(chip(&coverage_summary(coverage), p))
-                    .child(chip(&coverage_rule_summary(coverage), p))
                     .child(chip(&format!("{} ENTRIES", coverage.skipped_count()), p))
                     .child(chip(
                         &format!("{} RULES REGISTERED", self.rule_catalog.len()),
@@ -3303,8 +4243,9 @@ impl NcaShell {
     ) -> AnyElement {
         let loaded = self.state.loaded.as_ref();
         let program: Option<Arc<Program>> = loaded.and_then(|loaded| loaded.program.clone());
-        let stock: Option<StockBox> = loaded
-            .and_then(|loaded| loaded.stock)
+        let stock: Option<StockBox> = self
+            .state
+            .effective_stock()
             .and_then(|stock| stock.to_stock_box());
         let sim = self.sim_canvas();
         let marker = if sim.is_none() {
@@ -3726,6 +4667,846 @@ impl NcaShell {
             .into_any_element()
     }
 
+    fn setup_section(&self, title: &str, chips: Vec<Div>, focused: bool, p: Palette) -> Div {
+        let mut head = h_flex().items_center().gap_2().child(
+            div()
+                .text_size(px(10.5))
+                .font_weight(FontWeight::BOLD)
+                .text_color(if focused { p.accent } else { p.text_dim })
+                .child(title.to_string()),
+        );
+        for chip_element in chips {
+            head = head.child(chip_element);
+        }
+        if focused {
+            head = head.child(
+                chip("REQUESTED FROM COVERAGE", p)
+                    .text_color(p.accent)
+                    .border_color(p.accent),
+            );
+        }
+        v_flex()
+            .gap_2()
+            .p_2()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(if focused { p.accent } else { p.border })
+            .bg(if focused { p.accent_muted } else { p.panel_alt })
+            .child(head)
+    }
+
+    fn setup_field_box(&self, field: SetupField, p: Palette) -> Div {
+        let input = self.setup_inputs.get(&field).cloned();
+        let mut box_element = div()
+            .flex_1()
+            .min_w(px(0.0))
+            .h(px(28.0))
+            .flex()
+            .items_center()
+            .overflow_hidden()
+            .rounded(px(5.0))
+            .border_1()
+            .border_color(p.border_strong)
+            .bg(p.panel)
+            .px_1();
+        if let Some(input) = input {
+            box_element =
+                box_element.child(Input::new(&input).h(px(26.0)).w_full().text_size(px(10.0)));
+        }
+        box_element
+    }
+
+    fn setup_compact_field(&self, field: SetupField, p: Palette) -> Div {
+        v_flex()
+            .flex_1()
+            .min_w(px(0.0))
+            .gap_1()
+            .child(
+                div()
+                    .text_size(px(7.8))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(p.text_faint)
+                    .truncate()
+                    .child(field.label()),
+            )
+            .child(self.setup_field_box(field, p))
+    }
+
+    fn setup_input_row(&self, field: SetupField, p: Palette) -> Div {
+        h_flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .w(px(108.0))
+                    .flex_shrink_0()
+                    .text_size(px(8.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(p.text_faint)
+                    .child(field.label()),
+            )
+            .child(self.setup_field_box(field, p))
+    }
+
+    fn setup_tool_field(
+        &self,
+        field: SetupField,
+        tool_field: ToolField,
+        resolved: Option<&Tool>,
+        p: Palette,
+    ) -> Div {
+        let source = resolved.and_then(|tool| tool.sources.get(&tool_field).copied());
+        v_flex()
+            .flex_1()
+            .min_w(px(0.0))
+            .gap_1()
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(px(7.8))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(p.text_faint)
+                            .truncate()
+                            .child(field.label()),
+                    )
+                    .child(provenance_chip(source, p)),
+            )
+            .child(self.setup_field_box(field, p))
+    }
+
+    fn setup_stock_section(&self, p: Palette, view: Entity<Self>) -> Div {
+        let focused = self.settings_focus == Some(CoverageTarget::Stock);
+        let mut section = self.setup_section(
+            "STOCK",
+            vec![chip(self.state.stock_label(), p), chip("MILLIMETRES", p)],
+            focused,
+            p,
+        );
+        let explicit = self.state.setup.analysis.stock.is_some();
+        section = section.child(
+            h_flex()
+                .items_center()
+                .gap_1()
+                .child(compact_toggle(
+                    "stock-mode-inferred",
+                    "INFERRED",
+                    !explicit,
+                    p,
+                    view.clone(),
+                    move |shell, window, cx| shell.stock_mode_changed(false, window, cx),
+                ))
+                .child(compact_toggle(
+                    "stock-mode-explicit",
+                    "EXPLICIT",
+                    explicit,
+                    p,
+                    view.clone(),
+                    move |shell, window, cx| shell.stock_mode_changed(true, window, cx),
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(8.5))
+                        .text_color(p.text_faint)
+                        .child(self.state.stock_basis_text()),
+                ),
+        );
+        if let Some(error) = self.state.setup.stock_error.clone() {
+            section = section.child(
+                div()
+                    .text_size(px(8.5))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(p.danger)
+                    .child(format!("INVALID STOCK: {error}")),
+            );
+        }
+        section = section
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_end()
+                    .child(self.setup_compact_field(SetupField::StockOrigin(0), p))
+                    .child(self.setup_compact_field(SetupField::StockOrigin(1), p))
+                    .child(self.setup_compact_field(SetupField::StockOrigin(2), p)),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_end()
+                    .child(self.setup_compact_field(SetupField::StockSize(0), p))
+                    .child(self.setup_compact_field(SetupField::StockSize(1), p))
+                    .child(self.setup_compact_field(SetupField::StockSize(2), p)),
+            );
+        section
+    }
+
+    fn setup_tools_section(&self, p: Palette, view: Entity<Self>) -> Div {
+        let mut section = self.setup_section(
+            "TOOLS",
+            vec![
+                chip(
+                    &format!("{} INVENTORY", self.state.setup.inventory.len()),
+                    p,
+                ),
+                chip("KEYED BY SHA-256", p),
+            ],
+            false,
+            p,
+        );
+        let selected_number = self.state.setup.selected_tool;
+        let resolved = self.resolved_tools();
+        let resolved_tool = selected_number.and_then(|number| resolved.get(number).cloned());
+        let mut rows = v_flex().gap_1();
+        if self.state.setup.inventory.is_empty() {
+            rows = rows.child(
+                div()
+                    .text_size(px(9.0))
+                    .text_color(p.text_dim)
+                    .child("No T number is used by this program."),
+            );
+        }
+        for tool in &self.state.setup.inventory {
+            let number = tool.number;
+            let row_view = view.clone();
+            let selected = selected_number == Some(number);
+            let diameter = resolved
+                .get(number)
+                .and_then(|entry| entry.diameter_mm)
+                .map(format_diameter)
+                .unwrap_or_else(|| "?".to_string());
+            let comment = resolved
+                .get(number)
+                .and_then(|entry| entry.sources.get(&ToolField::Diameter).copied())
+                .and_then(|source| match source {
+                    FieldSource::Comment { line } => Some(format!("comment L{line}")),
+                    FieldSource::Config => None,
+                })
+                .or_else(|| tool.hint_line.map(|line| format!("comment L{line}")));
+            let mut label = format!(
+                "T{number}  \u{00d8}{diameter}  L{}  {} motions",
+                tool.first_line, tool.motion_count
+            );
+            if let Some(comment) = comment {
+                label.push_str(&format!("  {comment}"));
+            }
+            rows = rows.child(
+                div()
+                    .id(format!("setup-tool-{number}"))
+                    .h(px(30.0))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded(px(5.0))
+                    .border_1()
+                    .border_color(if selected { p.accent } else { p.border })
+                    .bg(if selected { p.accent_muted } else { p.panel })
+                    .text_size(px(9.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(if selected { p.accent } else { p.text })
+                    .cursor_pointer()
+                    .hover(|style| style.bg(p.raised_hover))
+                    .on_click(move |_, window, cx| {
+                        row_view.update(cx, |shell, cx| shell.select_tool(number, window, cx));
+                    })
+                    .child(label),
+            );
+        }
+        section = section.child(div().max_h(px(116.0)).overflow_y_scrollbar().child(rows));
+        if let Some(number) = selected_number {
+            let shape = resolved_tool
+                .as_ref()
+                .map_or(ToolShape::Unknown, |tool| tool.shape);
+            let mut shapes = h_flex().gap_1().flex_wrap();
+            for shape_option in [
+                ToolShape::Flat,
+                ToolShape::Ball,
+                ToolShape::Bull,
+                ToolShape::Drill,
+                ToolShape::VBit,
+                ToolShape::Unknown,
+            ] {
+                let shape_view = view.clone();
+                shapes = shapes.child(sheet_toggle(
+                    format!("setup-shape-{shape_option:?}").to_ascii_lowercase(),
+                    shape_option.label().to_uppercase(),
+                    shape == shape_option,
+                    p,
+                    shape_view,
+                    move |shell, window, cx| {
+                        shell.set_tool_shape(shape_option, window, cx);
+                    },
+                ));
+            }
+            let right_hand = resolved_tool.as_ref().and_then(|tool| tool.right_hand);
+            let hand_row = h_flex()
+                .gap_1()
+                .child(sheet_toggle(
+                    "setup-hand-right".to_string(),
+                    "RIGHT HAND".to_string(),
+                    right_hand == Some(true),
+                    p,
+                    view.clone(),
+                    move |shell, window, cx| {
+                        shell.set_tool_handedness(Some(true), window, cx);
+                    },
+                ))
+                .child(sheet_toggle(
+                    "setup-hand-left".to_string(),
+                    "LEFT HAND".to_string(),
+                    right_hand == Some(false),
+                    p,
+                    view.clone(),
+                    move |shell, window, cx| {
+                        shell.set_tool_handedness(Some(false), window, cx);
+                    },
+                ))
+                .child(sheet_toggle(
+                    "setup-hand-unknown".to_string(),
+                    "UNKNOWN".to_string(),
+                    right_hand.is_none(),
+                    p,
+                    view.clone(),
+                    move |shell, window, cx| {
+                        shell.set_tool_handedness(None, window, cx);
+                    },
+                ))
+                .child(provenance_chip(
+                    resolved_tool
+                        .as_ref()
+                        .and_then(|tool| tool.sources.get(&ToolField::RightHand).copied()),
+                    p,
+                ));
+            section = section
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(section_label(&format!("TOOL T{number}"), p))
+                        .child(chip(
+                            &resolved_tool.as_ref().map_or("blank".to_string(), |tool| {
+                                tool.name.clone().unwrap_or_else(|| "blank".to_string())
+                            }),
+                            p,
+                        ))
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .text_size(px(8.0))
+                                .text_color(p.text_faint)
+                                .child("Every field is optional; empty means unknown."),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .w(px(108.0))
+                                .text_size(px(8.0))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(p.text_faint)
+                                .child("SHAPE"),
+                        )
+                        .child(shapes)
+                        .child(provenance_chip(
+                            resolved_tool
+                                .as_ref()
+                                .and_then(|tool| tool.sources.get(&ToolField::Shape).copied()),
+                            p,
+                        )),
+                )
+                .child(hand_row)
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_end()
+                        .child(self.setup_tool_field(
+                            SetupField::ToolName,
+                            ToolField::Name,
+                            resolved_tool.as_ref(),
+                            p,
+                        ))
+                        .child(self.setup_tool_field(
+                            SetupField::ToolDiameter,
+                            ToolField::Diameter,
+                            resolved_tool.as_ref(),
+                            p,
+                        )),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_end()
+                        .child(self.setup_tool_field(
+                            SetupField::ToolFlutes,
+                            ToolField::Flutes,
+                            resolved_tool.as_ref(),
+                            p,
+                        ))
+                        .child(self.setup_tool_field(
+                            SetupField::ToolStickout,
+                            ToolField::Stickout,
+                            resolved_tool.as_ref(),
+                            p,
+                        ))
+                        .child(self.setup_tool_field(
+                            SetupField::ToolFluteLength,
+                            ToolField::FluteLength,
+                            resolved_tool.as_ref(),
+                            p,
+                        )),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_end()
+                        .child(self.setup_tool_field(
+                            SetupField::ToolTipAngle,
+                            ToolField::TipAngle,
+                            resolved_tool.as_ref(),
+                            p,
+                        ))
+                        .child(self.setup_tool_field(
+                            SetupField::ToolCornerRadius,
+                            ToolField::CornerRadius,
+                            resolved_tool.as_ref(),
+                            p,
+                        ))
+                        .child(self.setup_tool_field(
+                            SetupField::ToolShankDiameter,
+                            ToolField::ShankDiameter,
+                            resolved_tool.as_ref(),
+                            p,
+                        ))
+                        .child(self.setup_tool_field(
+                            SetupField::ToolHolderDiameter,
+                            ToolField::HolderDiameter,
+                            resolved_tool.as_ref(),
+                            p,
+                        )),
+                );
+        }
+        section
+    }
+
+    fn setup_material_section(&self, p: Palette, view: Entity<Self>) -> Div {
+        let focused = self.settings_focus == Some(CoverageTarget::Material);
+        let material = self.state.setup.analysis.material.clone();
+        let mut section = self.setup_section(
+            "MATERIAL",
+            vec![
+                chip(
+                    &material
+                        .as_ref()
+                        .map_or_else(|| "UNSET".to_string(), |preset| preset.name.to_uppercase()),
+                    p,
+                ),
+                chip("OPTIONAL RANGES", p),
+            ],
+            focused,
+            p,
+        );
+        let mut presets = h_flex().gap_1().flex_wrap();
+        presets = presets.child(sheet_toggle(
+            "setup-material-none".to_string(),
+            "NONE".to_string(),
+            material.is_none(),
+            p,
+            view.clone(),
+            move |shell, window, cx| {
+                shell.material_preset_changed(None, window, cx);
+            },
+        ));
+        for name in nc_core::MaterialPreset::builtin_names() {
+            let name_static: &'static str = name;
+            let active = material.as_ref().is_some_and(|preset| preset.name == *name);
+            presets = presets.child(sheet_toggle(
+                format!("setup-material-{name}"),
+                name.to_uppercase(),
+                active,
+                p,
+                view.clone(),
+                move |shell, window, cx| {
+                    shell.material_preset_changed(Some(name_static), window, cx);
+                },
+            ));
+        }
+        section = section.child(presets);
+        section = section
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_end()
+                    .child(self.setup_compact_field(SetupField::MaterialChiploadMin, p))
+                    .child(self.setup_compact_field(SetupField::MaterialChiploadMax, p))
+                    .child(self.setup_compact_field(SetupField::MaterialSurfaceSpeedMin, p))
+                    .child(self.setup_compact_field(SetupField::MaterialSurfaceSpeedMax, p))
+                    .child(self.setup_compact_field(SetupField::MaterialMaxMrr, p)),
+            )
+            .child(self.setup_input_row(SetupField::MaterialNotes, p));
+        if let Some(preset) = material.as_ref() {
+            section = section.child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(sheet_toggle(
+                        "setup-material-coolant".to_string(),
+                        "REQUIRES COOLANT".to_string(),
+                        preset.requires_coolant,
+                        p,
+                        view.clone(),
+                        move |shell, window, cx| {
+                            shell.toggle_coolant(window, cx);
+                        },
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(8.5))
+                            .text_color(p.text_faint)
+                            .child(preset.notes.clone()),
+                    ),
+            );
+        }
+        section
+    }
+
+    fn setup_machine_section(&self, p: Palette, view: Entity<Self>) -> Div {
+        let focused = self.settings_focus == Some(CoverageTarget::Machine);
+        let machine = self.state.setup.analysis.machine.clone();
+        let configured = machine.is_some();
+        let valid = machine
+            .as_ref()
+            .is_some_and(|machine| machine.validate().is_ok());
+        let mut section = self.setup_section(
+            "MACHINE",
+            vec![
+                chip(
+                    if !configured {
+                        "UNSET"
+                    } else if valid {
+                        "SET"
+                    } else {
+                        "INVALID"
+                    },
+                    p,
+                ),
+                chip("TRAVEL AND LIMITS", p),
+            ],
+            focused,
+            p,
+        );
+        section = section.child(
+            h_flex()
+                .items_center()
+                .gap_1()
+                .child(sheet_toggle(
+                    "setup-machine-off".to_string(),
+                    "UNSET".to_string(),
+                    !configured,
+                    p,
+                    view.clone(),
+                    move |shell, window, cx| {
+                        shell.machine_mode_changed(false, window, cx);
+                    },
+                ))
+                .child(sheet_toggle(
+                    "setup-machine-on".to_string(),
+                    "SET".to_string(),
+                    configured,
+                    p,
+                    view.clone(),
+                    move |shell, window, cx| {
+                        shell.machine_mode_changed(true, window, cx);
+                    },
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(8.5))
+                        .text_color(p.text_faint)
+                        .child(
+                            "Travel is required for machine rules; feed and spindle limits are optional.",
+                        ),
+                ),
+        );
+        if let Some(error) = self.state.setup.machine_error.clone() {
+            section = section.child(
+                div()
+                    .text_size(px(8.5))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(p.danger)
+                    .child(format!("INVALID MACHINE: {error}")),
+            );
+        }
+        section = section
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_end()
+                    .child(self.setup_compact_field(SetupField::MachineTravelMin(0), p))
+                    .child(self.setup_compact_field(SetupField::MachineTravelMin(1), p))
+                    .child(self.setup_compact_field(SetupField::MachineTravelMin(2), p))
+                    .child(self.setup_compact_field(SetupField::MachineTravelMax(0), p))
+                    .child(self.setup_compact_field(SetupField::MachineTravelMax(1), p))
+                    .child(self.setup_compact_field(SetupField::MachineTravelMax(2), p)),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_end()
+                    .child(self.setup_compact_field(SetupField::MachineMaxFeed, p))
+                    .child(self.setup_compact_field(SetupField::MachineMaxSpindle, p))
+                    .child(self.setup_compact_field(SetupField::MachineRapid, p)),
+            );
+        if configured {
+            section = section.child(sheet_toggle(
+                "setup-machine-manual".to_string(),
+                "SPINDLE MANUAL (NO M3 EXPECTED)".to_string(),
+                machine
+                    .as_ref()
+                    .is_some_and(|machine| machine.spindle_manual),
+                p,
+                view,
+                move |shell, window, cx| shell.toggle_spindle_manual(window, cx),
+            ));
+        }
+        section
+    }
+
+    fn setup_dialect_section(&self, p: Palette, view: Entity<Self>) -> Div {
+        let section = self.setup_section(
+            "DIALECT",
+            vec![
+                chip(
+                    if self.state.setup.dialect_assumed {
+                        "GENERIC ASSUMED"
+                    } else {
+                        "EXPLICIT"
+                    },
+                    p,
+                ),
+                chip("REPARSES THE PROGRAM", p),
+            ],
+            false,
+            p,
+        );
+        let mut buttons = h_flex().gap_1().flex_wrap();
+        for dialect in Dialect::ALL {
+            let active = self.state.setup.dialect == dialect;
+            buttons = buttons.child(sheet_toggle(
+                format!("setup-dialect-{}", dialect.label()),
+                dialect.label().to_uppercase(),
+                active,
+                p,
+                view.clone(),
+                move |shell, window, cx| shell.set_dialect_action(dialect, window, cx),
+            ));
+        }
+        section.child(buttons)
+    }
+
+    fn setup_simulation_section(&self, p: Palette, view: Entity<Self>) -> Div {
+        let crash = self.state.setup.sim.crash_preview;
+        let mut section = self.setup_section(
+            "SIMULATION",
+            vec![chip("STOCK REMOVAL PREVIEW", p), chip("LOCAL ONLY", p)],
+            false,
+            p,
+        );
+        section = section
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_end()
+                    .child(self.setup_compact_field(SetupField::SimCellMm, p))
+                    .child(self.setup_compact_field(SetupField::SimMaxCells, p))
+                    .child(self.setup_compact_field(SetupField::SimRapidRate, p))
+                    .child(self.setup_compact_field(SetupField::SimToolChangePause, p))
+                    .child(self.setup_compact_field(SetupField::SimAssumedDiameter, p)),
+            )
+            .child(sheet_toggle(
+                "setup-sim-crash".to_string(),
+                "CRASH PREVIEW".to_string(),
+                crash,
+                p,
+                view,
+                move |shell, window, cx| shell.toggle_crash_preview(window, cx),
+            ));
+        section
+    }
+
+    fn setup_tolerances_section(&self, p: Palette) -> Div {
+        self.setup_section("TOLERANCES", vec![chip("ANALYSIS THRESHOLDS", p)], false, p)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_end()
+                    .child(self.setup_compact_field(SetupField::ToleranceArcRadius, p))
+                    .child(self.setup_compact_field(SetupField::ToleranceMinSegment, p))
+                    .child(self.setup_compact_field(SetupField::ToleranceHoleXy, p))
+                    .child(self.setup_compact_field(SetupField::ToleranceClearance, p)),
+            )
+    }
+
+    fn setup_rules_section(&self, p: Palette, view: Entity<Self>) -> Div {
+        let selected_rule = self.state.setup.selected_rule.clone();
+        let mut section = self.setup_section(
+            "RULES",
+            vec![
+                chip(&format!("{} REGISTERED", self.rule_catalog.len()), p),
+                chip("THRESHOLDS FLATTENED FROM CONFIG", p),
+            ],
+            false,
+            p,
+        );
+        let mut rows = v_flex().gap_1();
+        for note in self.rule_catalog.iter() {
+            let id = note.rule.clone();
+            let settings = self.state.setup.rule_settings(&id);
+            let selected = selected_rule.as_ref() == Some(&id);
+            let severity = settings.severity.unwrap_or(note.severity);
+            let severity_label = if settings.severity.is_some() {
+                severity.label().to_uppercase()
+            } else {
+                format!("{} (DEFAULT)", severity.label().to_uppercase())
+            };
+            let threshold_count = settings.thresholds.len();
+            let select_view = view.clone();
+            let select_id = id.clone();
+            let toggle_view = view.clone();
+            let toggle_id = id.clone();
+            let severity_view = view.clone();
+            let severity_id = id.clone();
+            rows = rows.child(
+                h_flex()
+                    .id(format!("setup-rule-{id}"))
+                    .items_center()
+                    .gap_2()
+                    .px_1()
+                    .p_1()
+                    .rounded(px(4.0))
+                    .bg(if selected { p.accent_muted } else { p.panel })
+                    .cursor_pointer()
+                    .hover(|style| style.bg(p.raised_hover))
+                    .on_click(move |_, _, cx| {
+                        select_view.update(cx, |shell, cx| {
+                            shell.select_rule(select_id.clone(), cx);
+                        });
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .text_size(px(8.5))
+                            .font_weight(FontWeight::BOLD)
+                            .font_family("monospace")
+                            .text_color(if selected { p.accent } else { p.text_dim })
+                            .child(id),
+                    )
+                    .child(sheet_toggle(
+                        format!("rule-enabled-{toggle_id}"),
+                        if settings.enabled {
+                            "ENABLED".to_string()
+                        } else {
+                            "DISABLED".to_string()
+                        },
+                        settings.enabled,
+                        p,
+                        toggle_view,
+                        move |shell, window, cx| {
+                            shell.toggle_rule(toggle_id.clone(), window, cx);
+                        },
+                    ))
+                    .child(sheet_button(
+                        format!("rule-severity-{severity_id}"),
+                        severity_label,
+                        settings.severity.is_some(),
+                        p,
+                        severity_view,
+                        move |shell, window, cx| {
+                            shell.cycle_rule_severity(severity_id.clone(), window, cx);
+                        },
+                    ))
+                    .child(chip(&format!("{threshold_count} THR"), p)),
+            );
+        }
+        section = section.child(div().max_h(px(220.0)).overflow_y_scrollbar().child(rows));
+        if let Some(rule) = selected_rule {
+            let settings = self.state.setup.rule_settings(&rule);
+            let mut detail = v_flex().gap_1().child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(section_label(&format!("THRESHOLDS: {rule}"), p))
+                    .child(chip(&format!("{} SET", settings.thresholds.len()), p)),
+            );
+            if settings.thresholds.is_empty() {
+                detail =
+                    detail.child(div().text_size(px(8.5)).text_color(p.text_faint).child(
+                        "No numeric threshold is set; the rule uses its documented default.",
+                    ));
+            }
+            for (key, value) in &settings.thresholds {
+                let remove_rule = rule.clone();
+                let remove_key = key.clone();
+                let remove_view = view.clone();
+                detail = detail.child(
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_size(px(8.5))
+                                .font_weight(FontWeight::BOLD)
+                                .font_family("monospace")
+                                .text_color(p.text_dim)
+                                .child(format!("{key} = {value}")),
+                        )
+                        .child(div().flex_1())
+                        .child(sheet_button(
+                            format!("rule-threshold-remove-{rule}-{key}"),
+                            "REMOVE".to_string(),
+                            false,
+                            p,
+                            remove_view,
+                            move |shell, _, cx| {
+                                shell.remove_rule_threshold(
+                                    remove_rule.clone(),
+                                    remove_key.clone(),
+                                    cx,
+                                );
+                            },
+                        )),
+                );
+            }
+            let add_view = view;
+            detail = detail.child(
+                h_flex()
+                    .items_end()
+                    .gap_2()
+                    .child(self.setup_compact_field(SetupField::RuleThresholdKey, p))
+                    .child(self.setup_compact_field(SetupField::RuleThresholdValue, p))
+                    .child(sheet_button(
+                        "rule-threshold-add".to_string(),
+                        "SET THRESHOLD".to_string(),
+                        true,
+                        p,
+                        add_view,
+                        move |shell, _, cx| shell.add_rule_threshold(cx),
+                    )),
+            );
+            section = section.child(detail);
+        }
+        section
+    }
+
     fn settings_sheet(&self, layout: ShellLayout, p: Palette, view: Entity<Self>) -> AnyElement {
         let mut theme_row = h_flex().gap_2().items_center();
         for mode in ThemeMode::ALL {
@@ -3740,30 +5521,122 @@ impl NcaShell {
                 move |shell, _, cx| shell.set_theme(mode, cx),
             ));
         }
-        let placeholder =
-            |title: &'static str, detail: &'static str, target: Option<CoverageTarget>| {
-                let focused = target.is_some_and(|target| self.settings_focus == Some(target));
-                settings_placeholder(title, detail, focused, p)
+
+        let mut config_section = self.setup_section(
+            "CONFIG",
+            vec![
+                chip("STRICT TOML", p),
+                self.state
+                    .setup
+                    .config_name
+                    .as_ref()
+                    .map_or_else(|| chip("NO CONFIG", p), |name| chip(name, p)),
+            ],
+            false,
+            p,
+        );
+        config_section = config_section
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(self.setup_field_box(SetupField::ConfigPath, p))
+                    .child(action_button(
+                        "setup-load-config",
+                        "LOAD CONFIG",
+                        true,
+                        false,
+                        p,
+                        view.clone(),
+                        move |shell, window, cx| shell.load_config_action(window, cx),
+                    )),
+            )
+            .child(div().text_size(px(8.5)).text_color(p.text_faint).child(
+                "Unknown keys are errors. Loading applies stock, machine, material, \
+                         tolerances, rules, dialect, and tools to this file by SHA-256.",
+            ));
+
+        let mut message_row = v_flex();
+        if let Some(message) = self.state.setup.message.as_ref() {
+            let color = match message.kind {
+                crate::setup::MessageKind::Info => p.info,
+                crate::setup::MessageKind::Warning => p.warning,
+                crate::setup::MessageKind::Error => p.danger,
             };
+            message_row = message_row.child(
+                div()
+                    .text_size(px(9.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(color)
+                    .child(message.text.clone()),
+            );
+        }
+
+        let mut body =
+            v_flex()
+                .gap_2()
+                .child(message_row)
+                .child(config_section)
+                .child(self.setup_stock_section(p, view.clone()))
+                .child(self.setup_tools_section(p, view.clone()))
+                .child(self.setup_material_section(p, view.clone()))
+                .child(self.setup_machine_section(p, view.clone()))
+                .child(self.setup_dialect_section(p, view.clone()))
+                .child(self.setup_simulation_section(p, view.clone()))
+                .child(self.setup_tolerances_section(p))
+                .child(self.setup_rules_section(p, view.clone()))
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .child(section_label("APPEARANCE", p))
+                        .child(theme_row),
+                )
+                .child(div().text_size(px(8.5)).text_color(p.text_faint).child(
+                    "Never writes G-code or connects to a controller. Every edit is local.",
+                ));
+
+        body = body.child(
+            div()
+                .text_size(px(8.5))
+                .text_color(p.text_faint)
+                .child(ADVISORY_NOTE),
+        );
+
         overlay_layer(layout, p)
             .child(
                 v_flex()
-                    .w(px(620.0))
+                    .w(px(980.0))
                     .max_w_full()
+                    .h(px(760.0))
                     .max_h_full()
-                    .overflow_y_scrollbar()
-                    .gap_3()
-                    .p_3()
+                    .overflow_hidden()
                     .rounded_lg()
                     .border_1()
                     .border_color(p.border_strong)
                     .bg(p.panel)
                     .child(
                         h_flex()
+                            .h(px(48.0))
+                            .flex_shrink_0()
                             .items_center()
                             .gap_2()
-                            .child(section_label("SETTINGS", p))
+                            .px_2()
+                            .border_b_1()
+                            .border_color(p.border)
+                            .child(section_label("SETUP", p))
                             .child(chip("LOCAL ONLY", p))
+                            .child(chip(self.state.stock_label(), p))
+                            .child(chip(
+                                &if self.state.setup.dialect_assumed {
+                                    "GENERIC ASSUMED".to_string()
+                                } else {
+                                    format!(
+                                        "DIALECT: {}",
+                                        self.state.setup.dialect.label().to_uppercase()
+                                    )
+                                },
+                                p,
+                            ))
                             .child(div().flex_1())
                             .child(action_button(
                                 "settings-close",
@@ -3780,52 +5653,149 @@ impl NcaShell {
                             )),
                     )
                     .child(
-                        v_flex()
-                            .gap_2()
-                            .child(section_label("APPEARANCE", p))
-                            .child(theme_row),
-                    )
-                    .child(
-                        v_flex()
-                            .gap_2()
-                            .child(section_label("SETUP SHEET PLACEHOLDER", p))
-                            .child(placeholder(
-                                "STOCK - EXPLICIT",
-                                "Analysis infers stock from the toolpath. Explicit stock \
-                                 origin and size are a setup-sheet field in the next milestone.",
-                                Some(CoverageTarget::Stock),
-                            ))
-                            .child(placeholder(
-                                "MACHINE LIMITS",
-                                "Travel, maximum feed, maximum spindle speed, and manual-spindle \
-                                 mode are not set in v0.1. Rules that need them stay skipped.",
-                                Some(CoverageTarget::Machine),
-                            ))
-                            .child(placeholder(
-                                "MATERIAL PRESET",
-                                "No material preset is set in v0.1. Chipload and surface-speed \
-                                 rules stay skipped until one is available.",
-                                Some(CoverageTarget::Material),
-                            ))
-                            .child(placeholder(
-                                "TOOLS",
-                                "Use the tool chip or a coverage SET TOOL action to set diameter, \
-                                 shape, and flute count. The full tool inventory is a later milestone.",
-                                None,
-                            ))
-                            .child(placeholder(
-                                "RULES AND COVERAGE",
-                                "Per-rule thresholds and disabled-rule toggles are not editable in \
-                                 v0.1. The coverage panel lists every skipped rule and reason.",
-                                None,
-                            )),
-                    )
+                        div()
+                            .flex_1()
+                            .min_h(px(0.0))
+                            .overflow_y_scrollbar()
+                            .p_2()
+                            .child(body),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn export_sheet(&self, layout: ShellLayout, p: Palette, view: Entity<Self>) -> AnyElement {
+        let ready = self.analysis.report().is_some();
+        let mut format_row = h_flex().gap_1();
+        for format in ExportFormat::ALL {
+            let active = self.state.setup.export_format == format;
+            let format_view = view.clone();
+            format_row = format_row.child(sheet_toggle(
+                format!("export-format-{}", format.label()),
+                format.label().to_string(),
+                active,
+                p,
+                format_view,
+                move |shell, _, cx| shell.set_export_format(format, cx),
+            ));
+        }
+        let mut body = v_flex().gap_3();
+        if let Some(status) = self.state.setup.export_status.as_ref() {
+            let color = match status.kind {
+                crate::setup::MessageKind::Info => p.info,
+                crate::setup::MessageKind::Warning => p.warning,
+                crate::setup::MessageKind::Error => p.danger,
+            };
+            body = body.child(
+                div()
+                    .text_size(px(9.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(color)
+                    .child(status.text.clone()),
+            );
+        }
+        body = body
+            .child(
+                v_flex()
+                    .gap_1()
                     .child(
                         div()
-                            .text_size(px(9.5))
+                            .text_size(px(8.5))
+                            .font_weight(FontWeight::BOLD)
                             .text_color(p.text_faint)
-                            .child("Never writes G-code or connects to a controller."),
-                    ),
+                            .child("FORMAT"),
+                    )
+                    .child(format_row),
+            )
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(px(8.5))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(p.text_faint)
+                            .child("PATH - RELATIVE TO THE CURRENT DIRECTORY, OR ABSOLUTE"),
+                    )
+                    .child(self.setup_input_row(SetupField::ExportPath, p)),
+            )
+            .child(div().text_size(px(8.5)).text_color(p.text_faint).child(
+                "JSON is the canonical pretty report plus one newline. Markdown lists \
+                         every diagnostic and every coverage skip. The report body never contains \
+                         an absolute input path.",
+            ))
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        chip(
+                            if ready {
+                                "REPORT READY"
+                            } else {
+                                "ANALYZE FIRST"
+                            },
+                            p,
+                        )
+                        .text_color(if ready { p.info } else { p.warning })
+                        .border_color(if ready {
+                            p.info
+                        } else {
+                            p.warning
+                        }),
+                    )
+                    .child(div().flex_1())
+                    .child(action_button(
+                        "export-write",
+                        "WRITE REPORT",
+                        ready,
+                        false,
+                        p,
+                        view.clone(),
+                        move |shell, _, cx| shell.export_action(cx),
+                    )),
+            )
+            .child(
+                div()
+                    .text_size(px(8.5))
+                    .text_color(p.text_faint)
+                    .child(ADVISORY_NOTE),
+            );
+
+        overlay_layer(layout, p)
+            .child(
+                v_flex()
+                    .w(px(640.0))
+                    .max_w_full()
+                    .max_h_full()
+                    .overflow_y_scrollbar()
+                    .gap_3()
+                    .p_3()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(p.border_strong)
+                    .bg(p.panel)
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(section_label("EXPORT REPORT", p))
+                            .child(chip("LOCAL FILE", p))
+                            .child(div().flex_1())
+                            .child(action_button(
+                                "export-close",
+                                "CLOSE",
+                                true,
+                                false,
+                                p,
+                                view,
+                                move |shell, _, cx| {
+                                    shell.export_open = false;
+                                    cx.notify();
+                                },
+                            )),
+                    )
+                    .child(body),
             )
             .into_any_element()
     }
@@ -4226,6 +6196,10 @@ impl Render for NcaShell {
             self.program_search_input
                 .update(cx, |input, cx| input.set_value("", window, cx));
         }
+        if self.pending_setup_sync {
+            self.pending_setup_sync = false;
+            self.sync_setup_inputs(window, cx);
+        }
         let view = cx.entity();
         let font = cx.theme().font_family.clone();
 
@@ -4261,6 +6235,9 @@ impl Render for NcaShell {
         if self.state.settings_open {
             root = root.child(self.settings_sheet(layout, p, view.clone()));
         }
+        if self.export_open {
+            root = root.child(self.export_sheet(layout, p, view.clone()));
+        }
         if self.legend_open {
             root = root.child(self.legend_sheet(layout, p, view));
         }
@@ -4278,59 +6255,78 @@ fn portrait_program_height(layout: ShellLayout) -> f32 {
     (layout.content_height() - reserved).max(320.0)
 }
 
-/// A labeled placeholder section in the settings sheet.
-///
-/// `focused` highlights the section a coverage action asked for. It is a
-/// placeholder, never an editable field, so it cannot pretend to supply data.
-fn settings_placeholder(
-    title: &'static str,
-    detail: &'static str,
-    focused: bool,
-    p: Palette,
-) -> Div {
-    let mut section = v_flex()
-        .gap_1()
-        .p_2()
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(if focused { p.accent } else { p.border })
-        .bg(if focused { p.accent_muted } else { p.panel_alt })
-        .child(
-            h_flex()
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .text_size(px(10.0))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(if focused { p.accent } else { p.text_dim })
-                        .child(title),
-                )
-                .child(chip("PLACEHOLDER", p))
-                .child(if focused {
-                    chip("REQUESTED FROM COVERAGE", p)
-                        .text_color(p.accent)
-                        .border_color(p.accent)
-                } else {
-                    chip("NOT EDITABLE YET", p)
-                }),
-        )
-        .child(
-            div()
-                .text_size(px(9.5))
-                .text_color(p.text_faint)
-                .child(detail),
-        );
-    if focused {
-        section = section.child(
-            div()
-                .text_size(px(8.5))
-                .font_weight(FontWeight::BOLD)
-                .text_color(p.warning)
-                .child("This section cannot set a value in v0.1, so the rule stays skipped."),
-        );
+/// Creates one text input for every setup field.
+fn create_setup_inputs(
+    window: &mut Window,
+    cx: &mut Context<NcaShell>,
+) -> BTreeMap<SetupField, Entity<InputState>> {
+    let mut inputs = BTreeMap::new();
+    for &field in SetupField::ALL {
+        let placeholder = field.placeholder();
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(placeholder)
+                .clean_on_escape()
+                .submit_on_enter(true)
+        });
+        inputs.insert(field, input);
     }
-    section
+    inputs
+}
+
+/// A compact toggle with a dynamic element id.
+fn sheet_toggle(
+    id: String,
+    label: String,
+    on: bool,
+    p: Palette,
+    view: Entity<NcaShell>,
+    action: impl Fn(&mut NcaShell, &mut Window, &mut Context<NcaShell>) + 'static,
+) -> Stateful<Div> {
+    sheet_button(id, label, on, p, view, action)
+}
+
+/// A compact button with a dynamic element id.
+fn sheet_button(
+    id: String,
+    label: String,
+    active: bool,
+    p: Palette,
+    view: Entity<NcaShell>,
+    action: impl Fn(&mut NcaShell, &mut Window, &mut Context<NcaShell>) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .h(px(24.0))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .px_2()
+        .rounded(px(5.0))
+        .border_1()
+        .border_color(if active { p.accent } else { p.border })
+        .bg(if active { p.accent_muted } else { p.panel })
+        .text_size(px(8.0))
+        .font_weight(FontWeight::BOLD)
+        .text_color(if active { p.accent } else { p.text_faint })
+        .cursor_pointer()
+        .hover(|style| style.bg(p.raised_hover))
+        .on_click(move |_, window, cx| {
+            view.update(cx, |shell, cx| action(shell, window, cx));
+        })
+        .child(label)
+}
+
+/// Provenance chip for one tool field.
+fn provenance_chip(source: Option<FieldSource>, p: Palette) -> Div {
+    let label = provenance_label(source);
+    let color = match source {
+        Some(FieldSource::Config) => p.accent,
+        Some(FieldSource::Comment { .. }) => p.warning,
+        None => p.text_faint,
+    };
+    chip(&label, p).text_color(color).border_color(color)
 }
 
 /// A filled chip.
@@ -4500,30 +6496,6 @@ fn action_button(
     } else {
         button.opacity(0.45).child(label)
     }
-}
-
-/// A disabled placeholder action that keeps its top-bar slot.
-fn placeholder_button(id: &'static str, label: &'static str, p: Palette) -> Stateful<Div> {
-    let hint = format!("{label} arrives in a later milestone");
-    div()
-        .id(id)
-        .h(px(TOUCH_TARGET))
-        .min_w(px(52.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .px_2()
-        .rounded_lg()
-        .border_1()
-        .border_color(p.border)
-        .bg(p.panel_alt)
-        .opacity(0.45)
-        .text_size(px(9.5))
-        .font_weight(FontWeight::BOLD)
-        .text_color(p.text_faint)
-        .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
-        .child(label)
 }
 
 fn theme_button_id(mode: ThemeMode) -> &'static str {

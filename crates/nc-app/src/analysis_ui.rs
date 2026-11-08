@@ -309,16 +309,16 @@ impl CoverageTarget {
         match self {
             Self::Tool(number) => {
                 if number > 0 {
-                    "Set this tool's diameter, shape, or flute count."
+                    "Open the setup sheet and set this tool's diameter, shape, or flute count."
                 } else {
-                    "Set the missing tool field."
+                    "Open the setup sheet and set the missing tool field."
                 }
             }
-            Self::Machine => "Machine travel and limits are not set in v0.1.",
-            Self::Material => "No material preset is set in v0.1.",
-            Self::Stock => "Stock is inferred; the setup sheet cannot set it yet.",
+            Self::Machine => "Open the setup sheet to set travel, feed, and spindle limits.",
+            Self::Material => "Open the setup sheet to choose a material preset.",
+            Self::Stock => "Open the setup sheet to set explicit stock origin and size.",
             Self::RuleDisabled => "Disabled in the analysis config, so it never ran.",
-            Self::Other => "No editor exists for this input in v0.1.",
+            Self::Other => "No editor exists for this input.",
         }
     }
 }
@@ -371,17 +371,22 @@ pub fn coverage_groups(coverage: &Coverage) -> Vec<CoverageGroup> {
 }
 
 /// Plain `N evaluated · M skipped` text. Never a percentage.
+///
+/// `M` is the number of distinct rules that did not run, so
+/// `evaluated + skipped == total`. The number of individual skip records
+/// (a rule can miss several inputs) is shown separately as `ENTRIES`.
 #[must_use]
 pub fn coverage_summary(coverage: &Coverage) -> String {
     format!(
         "{} evaluated \u{00b7} {} skipped",
         coverage.evaluated,
-        coverage.skipped_count()
+        coverage.skipped_rule_count()
     )
 }
 
 /// Distinct-rule count text, using `Coverage::skipped_rule_count`.
 #[must_use]
+#[allow(dead_code)] // used by coverage_texts/tests; the panel uses the summary
 pub fn coverage_rule_summary(coverage: &Coverage) -> String {
     let rules = coverage.skipped_rule_count();
     if rules == 1 {
@@ -640,6 +645,10 @@ pub struct ReviewOptions {
     pub panel: Option<AnalysisPanel>,
     /// Select the first finding of this rule id once analysis finishes.
     pub select_rule: Option<String>,
+    /// Open the setup sheet at startup for a screenshot.
+    pub setup: bool,
+    /// Open the export sheet at startup for a screenshot.
+    pub export: bool,
 }
 
 /// One rule's explanatory text, resolved from the live registry.
@@ -691,6 +700,11 @@ impl RuleCatalog {
     #[must_use]
     pub fn len(&self) -> usize {
         self.notes.len()
+    }
+
+    /// Every described rule in stable id order.
+    pub fn iter(&self) -> impl Iterator<Item = &RuleNote> {
+        self.notes.values()
     }
 }
 
