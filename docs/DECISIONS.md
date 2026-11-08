@@ -162,4 +162,14 @@ consequence for the contract.
 - **Consequence:** Subagents still never commit; they report changed files. The
   orchestrator reviews the diff, runs the gate, then commits and pushes.
 
+## D020 - The CI license/advisory job is removed at the user's request
+
+- **Decision:** The GitHub Actions `license and advisories` job is removed. The
+  `deny.toml` policy and the local command `cargo deny check advisories licenses
+  bans sources` remain for manual use.
+- **Reason:** The user asked to remove that CI job on 2026-11-08. The action's
+  Docker image also failed to build before it could run.
+- **Consequence:** CI no longer enforces the license policy. Run the local
+  command before releases; the allow-list remains permissive-only.
+
 

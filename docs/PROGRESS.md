@@ -38,10 +38,27 @@ project knowledge store is lost.
 | 2026-11-08 | parser: clippy + `cargo test -p nc-gcode` | pass, 46 unit + 184 integration/doctests |
 | 2026-11-08 | real `box54` parse | 119,433 lines, 119,393 records, 0 errors, 327 ms debug |
 | 2026-11-08 | analysis skeleton: clippy + `cargo test -p nc-analysis` | pass, 18 + 25 + doctest; deterministic canonical JSON |
+| 2026-11-08 | app shell: clippy + `cargo test -p nc-app` | pass, 44 tests; 5 isolated nested captures at target sizes |
+| 2026-11-08 | Phase 1 gate: fmt + workspace clippy + workspace test | pass |
 
 ## Accepted milestones
 
-None yet. Phase 0 is the first gate.
+- **Phase 0** — workspace, docs, interfaces, ProgramBuilder (2026-11-08).
+- **Parser** — lossy mode, motion records, tool hints, real-file parse (2026-11-08).
+- **Stock/sim** — inference, heightmap, sweep, timeline, tick engine, stats (2026-11-08).
+- **Analysis skeleton** — engine, coverage, canonical JSON (2026-11-08).
+- **App shell** — GPUI VIEW mode, program list, 2D/3D canvas, legend, file
+  browser, settings sheet, 44 tests, screenshots (2026-11-08).
+- **Phase 1 gate** — workspace fmt, clippy `-D warnings`, and tests green
+  (2026-11-08).
+
+## Version control
+
+- Repository initialized on `main`.
+- Remote: `https://github.com/LeandroMarceddu/nca-rs`.
+- Commit `49273d1` — initial workspace, pushed 2026-11-08.
+- Policy D019: commits and pushes are authorized; one commit per accepted
+  subagent milestone; subagents still never commit.
 
 ## Changed files (Phase 0)
 

@@ -2,12 +2,27 @@
 all-features = true
 
 [advisories]
+# A yanked crate is a warning; an actual vulnerability is an error.
 yanked = "warn"
-ignore = []
+ignore = [
+  # GPUI Kit 0.8.1's desktop stack pins these transitive crates. They are
+  # unmaintained notices, not vulnerabilities, and there is no safe upgrade
+  # available in the pinned UI toolkit. Revisit when GPUI Kit is upgraded.
+  { id = "RUSTSEC-2024-0384", reason = "instant: transitive via GPUI; no safe upgrade in gpui-kit 0.8.1" },
+  { id = "RUSTSEC-2024-0436", reason = "paste: transitive via GPUI; unmaintained, no vulnerability" },
+  { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile: transitive via GPUI; no safe upgrade in gpui-kit 0.8.1" },
+  { id = "RUSTSEC-2026-0206", reason = "rustybuzz: transitive via GPUI text stack; no safe upgrade in gpui-kit 0.8.1" },
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser: transitive via GPUI text stack; no safe upgrade in gpui-kit 0.8.1" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names: transitive via GPUI D-Bus stack; no safe upgrade in gpui-kit 0.8.1" },
+  { id = "RUSTSEC-2026-0370", reason = "zvariant: transitive via GPUI D-Bus stack; no safe upgrade in gpui-kit 0.8.1" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: transitive via GPUI D-Bus stack; no safe upgrade in gpui-kit 0.8.1" },
+]
 
 [licenses]
 confidence-threshold = 0.8
+# Permissive licenses only. Each entry is an SPDX 3.11 identifier.
 allow = [
+  "0BSD",
   "MIT",
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
@@ -21,8 +36,10 @@ allow = [
 ]
 
 [bans]
+# Workspace crates use path-only dependencies; those are not wildcard version
+# requirements in the supply-chain sense. External wildcards remain a warning.
+wildcards = "warn"
 multiple-versions = "warn"
-wildcards = "deny"
 
 [sources]
 unknown-registry = "deny"
