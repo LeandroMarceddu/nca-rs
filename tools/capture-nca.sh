@@ -43,6 +43,7 @@ export NCA_W="$W"
 export NCA_H="$H"
 export NCA_OUT="$OUT"
 export NCA_BIN="$(realpath "$BIN")"
+export NCA_ARGS="${NCA_ARGS:-}"
 
 cleanup() {
   pkill -f 'kwin_wayland --virtual' 2>/dev/null || true
@@ -61,7 +62,7 @@ timeout 90 dbus-run-session -- bash -c '
   KWIN=$!
   sleep 2
 
-  "$NCA_BIN" --fullscreen >"$XDG_RUNTIME_DIR/app.log" 2>&1 &
+  "$NCA_BIN" --fullscreen $NCA_ARGS >"$XDG_RUNTIME_DIR/app.log" 2>&1 &
   APP=$!
   sleep 4
 

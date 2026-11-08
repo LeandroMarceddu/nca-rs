@@ -43,6 +43,7 @@ toml = "0.8"
 proptest = "1"
 crossbeam-channel = "0.5"
 gpui-kit = "0.8.1"
+png = "0.17"
 
 [profile.release]
 lto = "thin"
