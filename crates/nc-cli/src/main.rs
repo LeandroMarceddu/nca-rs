@@ -135,6 +135,7 @@ fn command_view(args: &[String]) -> Result<ExitCode, CliError> {
         return Err(CliError::ViewMissing { path: gui });
     }
     Command::new(&gui)
+        .arg("--open")
         .arg(&file)
         .spawn()
         .map_err(|source| CliError::ViewSpawn { path: gui, source })?;

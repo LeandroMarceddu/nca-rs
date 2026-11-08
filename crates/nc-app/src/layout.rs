@@ -55,6 +55,12 @@ pub const PORTRAIT_PROGRAM_MAX_HEIGHT: f32 = 560.0;
 /// Fraction of the viewport height reserved for the program list in portrait.
 pub const PORTRAIT_PROGRAM_FRACTION: f32 = 0.30;
 
+/// Height bounds for the analysis dock panel.
+pub const ANALYSIS_PANEL_MIN_HEIGHT: f32 = 180.0;
+pub const ANALYSIS_PANEL_MAX_HEIGHT: f32 = 300.0;
+/// Fraction of the content height reserved for an open analysis panel.
+pub const ANALYSIS_PANEL_FRACTION: f32 = 0.38;
+
 /// Layout family selected for one viewport.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayoutClass {
@@ -215,6 +221,13 @@ impl ShellLayout {
         (self.height - self.top_bar_height - STATUS_BAR_HEIGHT).max(0.0)
     }
 
+    /// Height of an open diagnostics/coverage dock.
+    #[must_use]
+    pub fn analysis_panel_height(&self) -> f32 {
+        (self.content_height() * ANALYSIS_PANEL_FRACTION)
+            .clamp(ANALYSIS_PANEL_MIN_HEIGHT, ANALYSIS_PANEL_MAX_HEIGHT)
+    }
+
     /// Number of top-bar action rows.
     #[must_use]
     pub const fn top_bar_rows(&self) -> usize {
@@ -271,6 +284,14 @@ mod tests {
         assert_eq!(layout.class, LayoutClass::Wide);
         assert_eq!(layout.left_width, 400.0);
         assert_eq!(layout.right_width, 280.0);
+    }
+
+    #[test]
+    fn analysis_panel_height_stays_bounded() {
+        let layout = ShellLayout::for_viewport(1280.0, 800.0);
+        let height = layout.analysis_panel_height();
+        assert!((ANALYSIS_PANEL_MIN_HEIGHT..=ANALYSIS_PANEL_MAX_HEIGHT).contains(&height));
+        assert!(height < layout.content_height());
     }
 
     #[test]

@@ -889,6 +889,7 @@ auto-blessed.
 | `nc-analysis` engine, coverage, canonical JSON, config loader | complete |
 | `nc-analysis` rules | complete catalog: 34 M1 + 11 M2 = 45 rules |
 | `nc-app` VIEW shell | complete |
-| `nc-app` SIMULATE mode | complete; diagnostics/coverage UI pending |
+| `nc-app` SIMULATE mode | complete |
+| `nc-app` diagnostics/coverage UI | complete for inferred-stock/tool inputs; config loading/setup sheet pending |
 | `nc-cli` commands and `nc-fixtures` harness | complete; 13 reviewed goldens |
 | Report goldens | reviewed and committed for the synthetic corpus |

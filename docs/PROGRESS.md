@@ -49,6 +49,7 @@ project knowledge store is lost.
 | 2026-11-08 | full workspace gate after M2 | fmt, clippy, tests, docs pass |
 | 2026-11-08 | sim speed fix: `cargo test -p nc-sim` | 31 tests, 4x/15 fps = 32 ticks |
 | 2026-11-08 | unanchored header hints: `cargo test -p nc-gcode` | pass, 9 new tests; real file unchanged |
+| 2026-11-08 | diagnostics/coverage UI: clippy + `cargo test -p nc-app` | pass, 77 tests; 2 captures |
 | 2026-11-08 | parser corrections: clippy + `cargo test -p nc-gcode -p nc-stock -p nc-sim` | pass; real file 119,393 records, 0 errors, 336 ms |
 
 ## Accepted milestones
@@ -83,6 +84,9 @@ project knowledge store is lost.
 - **M2 process rules** — shared engagement pass and 11 process rules; radial
   checks are side-cutting only; rest material uses enclosed regions; 33 tests
   (2026-11-08).
+- **Diagnostics + coverage UI** — analysis worker, filters/details/evidence,
+  click-to-zoom, warning overlay, severity gutter, grouped skip actions, 77 app
+  tests, two captures (2026-11-08).
 - **Full workspace gate** — fmt, clippy `-D warnings`, tests, and docs clean
   (2026-11-08).
 

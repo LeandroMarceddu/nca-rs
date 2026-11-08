@@ -39,6 +39,27 @@ use crate::theme::{Palette, cut_depth_color, move_color, stock_depth_color};
 /// Screen-space padding around the fitted toolpath, in logical pixels.
 const VIEW_PADDING_PX: f32 = 48.0;
 
+/// Screen-space padding around a focused diagnostic line, in logical pixels.
+const FOCUS_PADDING_PX: f32 = 72.0;
+
+/// Upper bound on warning-overlay segments painted in one frame.
+///
+/// A single source line can expand into thousands of arc chords. The first
+/// segments in report line order are drawn; the count is deterministic.
+const MAX_OVERLAY_SEGMENTS: usize = 20_000;
+
+/// Analysis overlays passed to the canvas for this frame.
+#[derive(Clone, Debug, Default)]
+pub struct ViewerOverlay {
+    /// Source lines with an error finding, sorted.
+    pub error_lines: Arc<[usize]>,
+    /// Source lines with a warning finding and no error, sorted.
+    pub warning_lines: Arc<[usize]>,
+    /// Source line to emphasize after overlays (diagnostic selection or the
+    /// SIMULATE current line).
+    pub highlight_line: Option<usize>,
+}
+
 /// Orbit sensitivity: radians of yaw or pitch per logical drag pixel.
 const ORBIT_RAD_PER_PX: f32 = 0.007;
 
@@ -219,6 +240,26 @@ impl ViewerHandle {
         true
     }
 
+    /// Frames a world-space XY region in the top view on the next paint.
+    pub fn focus_2d(&self, bounds: Bounds2) -> bool {
+        if bounds.is_empty() {
+            return false;
+        }
+        let mut viewer = self.inner.borrow_mut();
+        viewer.pending_focus = Some(bounds);
+        true
+    }
+
+    /// Frames a world-space region in the orbit view on the next paint.
+    pub fn focus_3d(&self, bounds: Bounds3) -> bool {
+        if bounds.is_empty() {
+            return false;
+        }
+        let mut viewer = self.inner.borrow_mut();
+        viewer.pending_focus3d = Some(bounds);
+        true
+    }
+
     /// Switches the projection mode and refits the destination camera once.
     pub fn set_mode(&self, mode: ViewerMode) -> bool {
         let mut viewer = self.inner.borrow_mut();
@@ -326,6 +367,7 @@ pub trait HasViewer {
 /// preview. `stock` is the display box inferred by `nc-stock` or entered by
 /// the operator. `marker` is the tool position at the program start. The
 /// `visibility` array gates exactly one semantic [`MoveKind`] per slot.
+/// `overlay` carries analysis warning/error lines and the current highlight.
 #[allow(clippy::too_many_arguments)]
 pub fn view<T: HasViewer + 'static>(
     handle: &ViewerHandle,
@@ -336,6 +378,7 @@ pub fn view<T: HasViewer + 'static>(
     visibility: [bool; MoveKind::ALL.len()],
     preview: bool,
     sim: Option<SimCanvas>,
+    overlay: Option<ViewerOverlay>,
     view: Entity<T>,
 ) -> impl IntoElement {
     let canvas_element = {
@@ -356,6 +399,7 @@ pub fn view<T: HasViewer + 'static>(
                     visibility,
                     preview,
                     paint_sim.clone(),
+                    overlay.clone(),
                     palette,
                     window,
                 );
@@ -818,6 +862,8 @@ struct Viewer {
     fit_distance3d: f32,
     pending_fit: bool,
     pending_fit_3d: bool,
+    pending_focus: Option<Bounds2>,
+    pending_focus3d: Option<Bounds3>,
     rect: Option<Bounds<Pixels>>,
     drag: Option<DragState>,
     synthetic: Option<Arc<Toolpath>>,
@@ -853,6 +899,8 @@ impl Default for Viewer {
             fit_distance3d: 0.0,
             pending_fit: false,
             pending_fit_3d: false,
+            pending_focus: None,
+            pending_focus3d: None,
             rect: None,
             drag: None,
             synthetic: None,
@@ -918,6 +966,8 @@ impl Viewer {
             self.identity_program = program.cloned();
             self.pending_fit = true;
             self.pending_fit_3d = true;
+            self.pending_focus = None;
+            self.pending_focus3d = None;
         }
         self.path_bounds = path.bounds().xy_bounds();
         self.path_bounds3 = path.bounds();
@@ -929,6 +979,15 @@ impl Viewer {
         if self.pending_fit_3d && !self.path_bounds3.is_empty() && !viewport.is_empty() {
             self.camera3d.fit_bounds(self.path_bounds3, VIEW_PADDING_PX);
             self.fit_distance3d = self.camera3d.distance();
+            self.pending_fit_3d = false;
+        }
+        // An explicit diagnostic focus wins over the program-fit request.
+        if let Some(bounds) = self.pending_focus.take() {
+            self.camera.fit(bounds, FOCUS_PADDING_PX);
+            self.pending_fit = false;
+        }
+        if let Some(bounds) = self.pending_focus3d.take() {
+            self.camera3d.fit_bounds(bounds, FOCUS_PADDING_PX);
             self.pending_fit_3d = false;
         }
 
@@ -1001,6 +1060,7 @@ fn paint(
     visibility: [bool; MoveKind::ALL.len()],
     preview: bool,
     sim: Option<SimCanvas>,
+    overlay: Option<ViewerOverlay>,
     palette: Palette,
     window: &mut Window,
 ) {
@@ -1038,14 +1098,19 @@ fn paint(
                 palette,
                 window,
             );
+        } else {
+            paint_plan_3d(bounds, &viewer.cache3d.plan, visibility, palette, window);
+        }
+        if let (Some(program), Some(overlay)) = (program.as_deref(), overlay.as_ref()) {
+            paint_overlay_3d(&camera3d, bounds, program, overlay, palette, window);
+            paint_highlight_3d(&camera3d, bounds, program, overlay, palette, window);
+        }
+        if let Some(sim) = &sim {
             if sim.toggles.tool {
                 paint_sim_tool_3d(&camera3d, bounds, sim, palette, window);
             }
-        } else {
-            paint_plan_3d(bounds, &viewer.cache3d.plan, visibility, palette, window);
-            if let Some(marker) = marker {
-                paint_marker_3d(&camera3d, bounds, marker, palette, window);
-            }
+        } else if let Some(marker) = marker {
+            paint_marker_3d(&camera3d, bounds, marker, palette, window);
         }
         return;
     }
@@ -1068,15 +1133,260 @@ fn paint(
             palette,
             window,
         );
+    } else {
+        paint_plan(bounds, &viewer.cache.plan, visibility, palette, window);
+    }
+    if let (Some(program), Some(overlay)) = (program.as_deref(), overlay.as_ref()) {
+        paint_overlay_2d(&camera, bounds, program, overlay, palette, window);
+        paint_highlight_2d(&camera, bounds, program, overlay, palette, window);
+    }
+    if let Some(sim) = &sim {
         if sim.toggles.tool {
             paint_sim_tool_2d(&camera, bounds, sim, palette, window);
         }
-    } else {
-        paint_plan(bounds, &viewer.cache.plan, visibility, palette, window);
-        if let Some(marker) = marker {
-            paint_marker(&camera, bounds, marker.xy(), palette, window);
+    } else if let Some(marker) = marker {
+        paint_marker(&camera, bounds, marker.xy(), palette, window);
+    }
+}
+
+/// Paints analysis warning and error segments in the top view.
+///
+/// The overlay is a dashed halo, deliberately distinct from the semantic move
+/// colours and from any solid red simulation marking. Errors paint before
+/// warnings and the segment budget is shared, so the visible set is stable.
+fn paint_overlay_2d(
+    camera: &Camera2D,
+    bounds: Bounds<Pixels>,
+    program: &Program,
+    overlay: &ViewerOverlay,
+    palette: Palette,
+    window: &mut Window,
+) {
+    let mut remaining = MAX_OVERLAY_SEGMENTS;
+    remaining = remaining.saturating_sub(paint_alert_lines_2d(
+        camera,
+        bounds,
+        program,
+        &overlay.error_lines,
+        palette.danger,
+        remaining,
+        window,
+    ));
+    let _ = paint_alert_lines_2d(
+        camera,
+        bounds,
+        program,
+        &overlay.warning_lines,
+        palette.warning,
+        remaining,
+        window,
+    );
+}
+
+/// Paints analysis warning and error segments in the orbit view.
+fn paint_overlay_3d(
+    camera: &Camera3D,
+    bounds: Bounds<Pixels>,
+    program: &Program,
+    overlay: &ViewerOverlay,
+    palette: Palette,
+    window: &mut Window,
+) {
+    let mut remaining = MAX_OVERLAY_SEGMENTS;
+    remaining = remaining.saturating_sub(paint_alert_lines_3d(
+        camera,
+        bounds,
+        program,
+        &overlay.error_lines,
+        palette.danger,
+        remaining,
+        window,
+    ));
+    let _ = paint_alert_lines_3d(
+        camera,
+        bounds,
+        program,
+        &overlay.warning_lines,
+        palette.warning,
+        remaining,
+        window,
+    );
+}
+
+/// Paints dashed line halos for one severity in the top view.
+fn paint_alert_lines_2d(
+    camera: &Camera2D,
+    bounds: Bounds<Pixels>,
+    program: &Program,
+    lines: &[usize],
+    color: Hsla,
+    limit: usize,
+    window: &mut Window,
+) -> usize {
+    if lines.is_empty() || limit == 0 {
+        return 0;
+    }
+    let left = f32::from(bounds.origin.x);
+    let top = f32::from(bounds.origin.y);
+    let mut halo = PathBuilder::stroke(px(12.0));
+    let mut dash = PathBuilder::stroke(px(2.0)).dash_array(&[px(6.0), px(4.0)]);
+    let mut drawn = 0usize;
+    for line in lines {
+        for range in crate::analysis_ui::segment_ranges(program, *line, *line) {
+            for segment in program
+                .toolpath
+                .segments()
+                .get(range.start.min(program.toolpath.len())..range.end.min(program.toolpath.len()))
+                .unwrap_or_default()
+            {
+                if drawn >= limit {
+                    paint_path(halo, color.alpha(0.16), window);
+                    paint_path(dash, color.alpha(0.92), window);
+                    return drawn;
+                }
+                let start = camera.world_to_screen(segment.start.xy());
+                let end = camera.world_to_screen(segment.end.xy());
+                halo.move_to(point(px(left + start.x), px(top + start.y)));
+                halo.line_to(point(px(left + end.x), px(top + end.y)));
+                dash.move_to(point(px(left + start.x), px(top + start.y)));
+                dash.line_to(point(px(left + end.x), px(top + end.y)));
+                drawn += 1;
+            }
         }
     }
+    paint_path(halo, color.alpha(0.16), window);
+    paint_path(dash, color.alpha(0.92), window);
+    drawn
+}
+
+/// Paints dashed line halos for one severity in the orbit view.
+fn paint_alert_lines_3d(
+    camera: &Camera3D,
+    bounds: Bounds<Pixels>,
+    program: &Program,
+    lines: &[usize],
+    color: Hsla,
+    limit: usize,
+    window: &mut Window,
+) -> usize {
+    if lines.is_empty() || limit == 0 {
+        return 0;
+    }
+    let mut halo = PathBuilder::stroke(px(12.0));
+    let mut dash = PathBuilder::stroke(px(2.0)).dash_array(&[px(6.0), px(4.0)]);
+    let mut drawn = 0usize;
+    for line in lines {
+        for range in crate::analysis_ui::segment_ranges(program, *line, *line) {
+            let start = range.start.min(program.toolpath.len());
+            let end = range.end.min(program.toolpath.len());
+            for segment in &program.toolpath.segments()[start..end] {
+                let (Some((x0, y0)), Some((x1, y1))) = (
+                    project_window(camera, bounds, segment.start),
+                    project_window(camera, bounds, segment.end),
+                ) else {
+                    continue;
+                };
+                if drawn >= limit {
+                    paint_path(halo, color.alpha(0.16), window);
+                    paint_path(dash, color.alpha(0.92), window);
+                    return drawn;
+                }
+                halo.move_to(point(px(x0), px(y0)));
+                halo.line_to(point(px(x1), px(y1)));
+                dash.move_to(point(px(x0), px(y0)));
+                dash.line_to(point(px(x1), px(y1)));
+                drawn += 1;
+            }
+        }
+    }
+    paint_path(halo, color.alpha(0.16), window);
+    paint_path(dash, color.alpha(0.92), window);
+    drawn
+}
+
+/// Paints the selected diagnostic line or the SIMULATE current line last, so
+/// the current-line highlight wins over the warning overlay.
+fn paint_highlight_2d(
+    camera: &Camera2D,
+    bounds: Bounds<Pixels>,
+    program: &Program,
+    overlay: &ViewerOverlay,
+    palette: Palette,
+    window: &mut Window,
+) {
+    let Some(line) = overlay.highlight_line else {
+        return;
+    };
+    let ranges = crate::analysis_ui::segment_ranges_with_fallback(program, line, line);
+    if ranges.is_empty() {
+        return;
+    }
+    let left = f32::from(bounds.origin.x);
+    let top = f32::from(bounds.origin.y);
+    let mut halo = PathBuilder::stroke(px(7.0));
+    let mut line_path = PathBuilder::stroke(px(2.0));
+    let mut drawn = 0usize;
+    for range in ranges {
+        let start = range.start.min(program.toolpath.len());
+        let end = range.end.min(program.toolpath.len());
+        for segment in &program.toolpath.segments()[start..end] {
+            if drawn >= MAX_OVERLAY_SEGMENTS {
+                break;
+            }
+            let start = camera.world_to_screen(segment.start.xy());
+            let end = camera.world_to_screen(segment.end.xy());
+            halo.move_to(point(px(left + start.x), px(top + start.y)));
+            halo.line_to(point(px(left + end.x), px(top + end.y)));
+            line_path.move_to(point(px(left + start.x), px(top + start.y)));
+            line_path.line_to(point(px(left + end.x), px(top + end.y)));
+            drawn += 1;
+        }
+    }
+    paint_path(halo, palette.accent.alpha(0.18), window);
+    paint_path(line_path, palette.accent_hover, window);
+}
+
+/// Paints the selected diagnostic line or the SIMULATE current line in 3D.
+fn paint_highlight_3d(
+    camera: &Camera3D,
+    bounds: Bounds<Pixels>,
+    program: &Program,
+    overlay: &ViewerOverlay,
+    palette: Palette,
+    window: &mut Window,
+) {
+    let Some(line) = overlay.highlight_line else {
+        return;
+    };
+    let ranges = crate::analysis_ui::segment_ranges_with_fallback(program, line, line);
+    if ranges.is_empty() {
+        return;
+    }
+    let mut halo = PathBuilder::stroke(px(7.0));
+    let mut line_path = PathBuilder::stroke(px(2.0));
+    let mut drawn = 0usize;
+    for range in ranges {
+        let start = range.start.min(program.toolpath.len());
+        let end = range.end.min(program.toolpath.len());
+        for segment in &program.toolpath.segments()[start..end] {
+            if drawn >= MAX_OVERLAY_SEGMENTS {
+                break;
+            }
+            let (Some((x0, y0)), Some((x1, y1))) = (
+                project_window(camera, bounds, segment.start),
+                project_window(camera, bounds, segment.end),
+            ) else {
+                continue;
+            };
+            halo.move_to(point(px(x0), px(y0)));
+            halo.line_to(point(px(x1), px(y1)));
+            line_path.move_to(point(px(x0), px(y0)));
+            line_path.line_to(point(px(x1), px(y1)));
+            drawn += 1;
+        }
+    }
+    paint_path(halo, palette.accent.alpha(0.18), window);
+    paint_path(line_path, palette.accent_hover, window);
 }
 
 /// Paints a world-aligned grid with major lines every fifth step.

@@ -360,8 +360,7 @@ pub struct SimToggles {
     pub future_path: bool,
     /// Show the tool cylinder and crosshair.
     pub tool: bool,
-    /// Show diagnostic warning overlays. No diagnostics are loaded in this
-    /// milestone, so the toggle is present but has no segments to gate yet.
+    /// Show diagnostic warning and error overlays from the analysis report.
     pub warnings: bool,
 }
 

@@ -5,6 +5,7 @@
 //! controller panel, DRO, jog, MDI, console, connect, reset, or start control;
 //! the only file mutation is reading a local program into memory.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,11 +22,20 @@ use gpui_kit::{
     SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
     UniformListScrollHandle, Window, div, px, uniform_list,
 };
+use nc_analysis::{AnalysisConfig, Report, Severity as AnalysisSeverity};
 use nc_core::{Tool, ToolShape, ToolTable};
 use nc_gcode::Program;
 use nc_sim::{SimConfig, Simulation};
 use nc_stock::{Cutter, StockModel};
 use nc_viewer::{MoveFamily, MoveKind, StockBox};
+
+use crate::analysis_ui::{
+    AnalysisGeneration, AnalysisPanel, AnalysisState, CoverageGroup, CoverageTarget,
+    DiagnosticFilter, OverlayLines, ReviewOptions, RuleCatalog, SeverityCounts, SeverityFilter,
+    coverage_groups, coverage_rule_summary, coverage_summary, focus_bounds, line_severities,
+    overlay_lines,
+};
+use crate::analysis_worker::AnalysisWorker;
 
 use crate::file_browser::{
     BrowserEntry, FileBrowser, compact_path, default_root, display_path, format_size, read_program,
@@ -40,7 +50,7 @@ use crate::sim::{
 use crate::sim_worker::SeekWorker;
 use crate::state::{AppMode, LoadedProgram, NcaConfig, NcaState, ParseState};
 use crate::theme::{Palette, ThemeMode, apply as apply_theme, move_color, move_style};
-use crate::viewer::{self, HasViewer, ViewerHandle, ViewerMode};
+use crate::viewer::{self, HasViewer, ViewerHandle, ViewerMode, ViewerOverlay};
 
 /// Height of the SIMULATE transport bar, in logical pixels.
 const TRANSPORT_HEIGHT: f32 = 76.0;
@@ -124,6 +134,23 @@ pub struct NcaShell {
     tool_flutes_input: Entity<InputState>,
     tool_edit_error: Option<String>,
     scrub_slider: Entity<SliderState>,
+    analysis: AnalysisState,
+    analysis_worker: Option<AnalysisWorker>,
+    analysis_run: u64,
+    program_generation: u64,
+    selected_diagnostic: Option<usize>,
+    analysis_panel: Option<AnalysisPanel>,
+    severity_filter: SeverityFilter,
+    diagnostic_rule: String,
+    diagnostic_search: String,
+    diagnostic_rule_input: Entity<InputState>,
+    diagnostic_search_input: Entity<InputState>,
+    diagnostics_scroll: UniformListScrollHandle,
+    rule_catalog: RuleCatalog,
+    line_severity_map: Arc<BTreeMap<usize, AnalysisSeverity>>,
+    overlay_lines: OverlayLines,
+    pending_select_rule: Option<String>,
+    settings_focus: Option<CoverageTarget>,
 }
 
 impl NcaShell {
@@ -137,6 +164,7 @@ impl NcaShell {
         simulate: bool,
         sim_at: Option<f32>,
         autoplay: bool,
+        review: ReviewOptions,
         initial_theme: ThemeMode,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -168,6 +196,18 @@ impl NcaShell {
         let tool_flutes_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("2")
+                .clean_on_escape()
+                .submit_on_enter(true)
+        });
+        let diagnostic_rule_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Rule id or category")
+                .clean_on_escape()
+                .submit_on_enter(true)
+        });
+        let diagnostic_search_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Message, rule, or line")
                 .clean_on_escape()
                 .submit_on_enter(true)
         });
@@ -213,6 +253,30 @@ impl NcaShell {
             };
             this.scrub_to_fraction(f64::from(fraction), cx);
         }));
+        subscriptions.push(cx.subscribe(
+            &diagnostic_rule_input,
+            |this, input, event, cx| match event {
+                InputEvent::Change => {
+                    this.diagnostic_rule = input.read(cx).value().to_string();
+                    cx.notify();
+                }
+                InputEvent::PressEnter { .. } => this.select_first_diagnostic(cx),
+                _ => {}
+            },
+        ));
+        subscriptions.push(
+            cx.subscribe(
+                &diagnostic_search_input,
+                |this, input, event, cx| match event {
+                    InputEvent::Change => {
+                        this.diagnostic_search = input.read(cx).value().to_string();
+                        cx.notify();
+                    }
+                    InputEvent::PressEnter { .. } => this.select_first_diagnostic(cx),
+                    _ => {}
+                },
+            ),
+        );
 
         let mono = cx.theme().mono_font_family.clone();
         let mut shell = Self {
@@ -248,7 +312,28 @@ impl NcaShell {
             tool_flutes_input,
             tool_edit_error: None,
             scrub_slider,
+            analysis: AnalysisState::Idle,
+            analysis_worker: None,
+            analysis_run: 0,
+            program_generation: 1,
+            selected_diagnostic: None,
+            analysis_panel: None,
+            severity_filter: SeverityFilter::All,
+            diagnostic_rule: String::new(),
+            diagnostic_search: String::new(),
+            diagnostic_rule_input,
+            diagnostic_search_input,
+            diagnostics_scroll: UniformListScrollHandle::new(),
+            rule_catalog: RuleCatalog::load(),
+            line_severity_map: Arc::new(BTreeMap::new()),
+            overlay_lines: OverlayLines::default(),
+            pending_select_rule: review.select_rule.clone(),
+            settings_focus: None,
         };
+        shell.analysis_panel = review.panel;
+        if review.analyze && shell.analysis_panel.is_none() {
+            shell.analysis_panel = Some(AnalysisPanel::Diagnostics);
+        }
         if let Some(path) = open_path {
             shell.load_initial(path);
         }
@@ -267,6 +352,7 @@ impl NcaShell {
                 shell.start_playback(cx);
             }
         }
+        shell.begin_analysis(cx);
         shell
     }
 
@@ -378,6 +464,227 @@ impl NcaShell {
         self.seeking = false;
         self.seek_generation = None;
         self.scrub_target = None;
+    }
+
+    fn diagnostic_filter(&self) -> DiagnosticFilter {
+        DiagnosticFilter::new(
+            self.severity_filter,
+            &self.diagnostic_rule,
+            &self.diagnostic_search,
+        )
+    }
+
+    /// Drops the report-specific view caches and the selected finding.
+    fn clear_analysis_views(&mut self) {
+        self.selected_diagnostic = None;
+        self.line_severity_map = Arc::new(BTreeMap::new());
+        self.overlay_lines = OverlayLines::default();
+    }
+
+    /// Starts analysis on the worker thread for the currently loaded program.
+    ///
+    /// The resolved tool table is the only optional input the app has in v0.1:
+    /// stock stays inferred, machine and material stay unset, tolerances and
+    /// rules stay at their defaults, and `Generic` is explicitly labeled as an
+    /// assumed dialect.
+    fn begin_analysis(&mut self, cx: &mut Context<Self>) {
+        self.analysis_run = self.analysis_run.wrapping_add(1);
+        if let Some(worker) = self.analysis_worker.as_mut() {
+            worker.cancel(self.analysis_run);
+        }
+        let generation = AnalysisGeneration {
+            run: self.analysis_run,
+            program: self.program_generation,
+        };
+        self.clear_analysis_views();
+        self.analysis.begin(generation);
+
+        let Some(loaded) = self.state.loaded.as_ref() else {
+            self.analysis = AnalysisState::Failed {
+                generation,
+                message: "No program is open, so there is nothing to analyze.".to_string(),
+            };
+            cx.notify();
+            return;
+        };
+        let Some(program) = loaded.program.as_ref().cloned() else {
+            self.analysis = AnalysisState::Failed {
+                generation,
+                message: "The file has parse errors, so no program reached the analysis engine."
+                    .to_string(),
+            };
+            cx.notify();
+            return;
+        };
+        let file_name = loaded.name.clone();
+        let source = Arc::clone(&loaded.source);
+        let mut config = AnalysisConfig::default();
+        config.tools = ToolTable::resolve(&self.state.config.tools, &program.tool_hints);
+
+        if self.analysis_worker.is_none() {
+            match AnalysisWorker::spawn() {
+                Ok(worker) => self.analysis_worker = Some(worker),
+                Err(message) => {
+                    self.analysis = AnalysisState::Failed {
+                        generation,
+                        message,
+                    };
+                    cx.notify();
+                    return;
+                }
+            }
+        }
+        let result = self
+            .analysis_worker
+            .as_mut()
+            .map(|worker| worker.request(generation, program, file_name, source, config));
+        match result {
+            Some(Ok(())) => {}
+            Some(Err(message)) => {
+                self.analysis = AnalysisState::Failed {
+                    generation,
+                    message,
+                };
+            }
+            None => {
+                self.analysis = AnalysisState::Failed {
+                    generation,
+                    message: "The analysis worker is unavailable.".to_string(),
+                };
+            }
+        }
+        cx.notify();
+    }
+
+    /// Cancels the current request. A worker already inside the engine finishes
+    /// its computation, but its stale result is discarded.
+    fn cancel_analysis(&mut self, cx: &mut Context<Self>) {
+        self.analysis_run = self.analysis_run.wrapping_add(1);
+        if let Some(worker) = self.analysis_worker.as_mut() {
+            worker.cancel(self.analysis_run);
+        }
+        self.analysis = AnalysisState::Canceled;
+        self.clear_analysis_views();
+        cx.notify();
+    }
+
+    /// Polls completed analyses. Only the current generation can replace state.
+    fn poll_analysis(&mut self, cx: &mut Context<Self>) {
+        let mut completed = Vec::new();
+        if let Some(worker) = self.analysis_worker.as_ref() {
+            while let Some(response) = worker.try_recv() {
+                completed.push(response);
+            }
+        }
+        let mut changed = false;
+        for response in completed {
+            if self.analysis.complete(response.generation, response.result) {
+                changed = true;
+                if let Some(report) = self.analysis.report().cloned() {
+                    self.apply_report_views(&report, cx);
+                }
+            }
+        }
+        if self.analysis.is_running()
+            && self
+                .analysis_worker
+                .as_ref()
+                .is_some_and(|worker| !worker.is_alive())
+            && let AnalysisState::Running(generation) = self.analysis
+        {
+            self.analysis = AnalysisState::Failed {
+                generation,
+                message: "The analysis worker stopped unexpectedly.".to_string(),
+            };
+            changed = true;
+        }
+        if changed {
+            cx.notify();
+        }
+    }
+
+    /// Rebuilds gutter and overlay caches and applies a review selection.
+    fn apply_report_views(&mut self, report: &Arc<Report>, cx: &mut Context<Self>) {
+        self.line_severity_map = Arc::new(line_severities(report));
+        self.overlay_lines = overlay_lines(report);
+        let pending = self.pending_select_rule.take();
+        if let Some(rule) = pending
+            && let Some(index) = report
+                .diagnostics
+                .iter()
+                .position(|diagnostic| diagnostic.rule.as_str() == rule)
+        {
+            self.analysis_panel = Some(AnalysisPanel::Diagnostics);
+            self.select_diagnostic(index, cx);
+        }
+    }
+
+    fn select_first_diagnostic(&mut self, cx: &mut Context<Self>) {
+        let Some(report) = self.analysis.report().cloned() else {
+            return;
+        };
+        let Some(index) = self.diagnostic_filter().indices(&report).first().copied() else {
+            return;
+        };
+        self.analysis_panel = Some(AnalysisPanel::Diagnostics);
+        self.select_diagnostic(index, cx);
+    }
+
+    /// Selects one finding: highlights and scrolls its source line and frames
+    /// the segments it generated. The viewer stays interactive.
+    fn select_diagnostic(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(report) = self.analysis.report().cloned() else {
+            return;
+        };
+        let Some(diagnostic) = report.diagnostics.get(index) else {
+            return;
+        };
+        let line = diagnostic.line;
+        let line_end = diagnostic.line_end;
+        self.selected_diagnostic = Some(index);
+        self.state.selected_line = Some(line);
+        self.state.ensure_index();
+        let mut visible = self
+            .state
+            .index()
+            .and_then(|index| index.visible_index(line.saturating_sub(1)));
+        if visible.is_none() && !self.state.search.trim().is_empty() {
+            // A diagnostic click must reveal its source line, so drop a search
+            // filter that hides it. The input is cleared on the next frame.
+            self.state.search.clear();
+            self.pending_search_reset = true;
+            self.state.ensure_index();
+            visible = self
+                .state
+                .index()
+                .and_then(|index| index.visible_index(line.saturating_sub(1)));
+        }
+        if let Some(visible) = visible {
+            self.program_scroll
+                .scroll_to_item(visible, ScrollStrategy::Center);
+        }
+        self.focus_line(line, line_end);
+        cx.notify();
+    }
+
+    /// Frames the world bounds of a source line in the active projection.
+    fn focus_line(&mut self, line: usize, line_end: usize) {
+        let Some(program) = self
+            .state
+            .loaded
+            .as_ref()
+            .and_then(|loaded| loaded.program.as_ref().cloned())
+        else {
+            return;
+        };
+        let Some(bounds) = focus_bounds(&program, line, line_end) else {
+            return;
+        };
+        if self.viewer.mode().is_three_d() {
+            self.viewer.focus_3d(bounds);
+        } else {
+            self.viewer.focus_2d(bounds.xy_bounds());
+        }
     }
 
     /// Applies a startup seek synchronously so a screenshot is reproducible.
@@ -816,6 +1123,11 @@ impl NcaShell {
 
     fn open_tool_popover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let tool = self.active_tool_number();
+        self.open_tool_popover_for(tool, window, cx);
+    }
+
+    /// Opens the quick tool editor for one tool number.
+    fn open_tool_popover_for(&mut self, tool: u32, window: &mut Window, cx: &mut Context<Self>) {
         if tool == 0 {
             self.tool_edit_number = None;
             self.tool_edit_error = Some("No tool is named by this program.".to_string());
@@ -878,6 +1190,7 @@ impl NcaShell {
         } else {
             cx.notify();
         }
+        self.begin_analysis(cx);
     }
 
     fn rebuild_after_tool_edit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -908,6 +1221,7 @@ impl NcaShell {
     fn load_initial(&mut self, path: PathBuf) {
         match read_program(&path) {
             Ok(file) => {
+                self.program_generation = self.program_generation.wrapping_add(1);
                 self.state.adopt(LoadedProgram::from_file(file));
                 self.program_scroll.scroll_to_item(0, ScrollStrategy::Top);
                 self.viewer.fit();
@@ -936,6 +1250,7 @@ impl NcaShell {
             let _ = weak.update(cx, |shell, cx| {
                 match result {
                     Ok(loaded) => {
+                        shell.program_generation = shell.program_generation.wrapping_add(1);
                         shell.state.adopt(loaded);
                         shell.program_scroll.scroll_to_item(0, ScrollStrategy::Top);
                         shell.browser = None;
@@ -943,6 +1258,7 @@ impl NcaShell {
                         shell.pending_search_reset = true;
                         shell.viewer.fit();
                         shell.program_changed(cx);
+                        shell.begin_analysis(cx);
                     }
                     Err(message) => {
                         shell.state.loading = false;
@@ -1125,6 +1441,59 @@ impl NcaShell {
             .into_any_element()
     }
 
+    /// Top-bar analysis state and counts. Clicking it opens the diagnostics panel.
+    fn analysis_chip(&self, p: Palette, view: Entity<Self>) -> AnyElement {
+        let report = self.analysis.report();
+        let counts = report.map(|report| SeverityCounts::from_report(report));
+        let (text, color, border) = match (&self.analysis, counts) {
+            (AnalysisState::Ready { .. }, Some(counts)) => {
+                let color = if counts.errors > 0 {
+                    p.danger
+                } else if counts.warnings > 0 {
+                    p.warning
+                } else {
+                    p.text_dim
+                };
+                let border = if counts.errors > 0 {
+                    p.danger
+                } else if counts.warnings > 0 {
+                    p.warning
+                } else {
+                    p.border
+                };
+                (
+                    format!("{} {}", self.analysis.label(), counts.compact()),
+                    color,
+                    border,
+                )
+            }
+            (AnalysisState::Running(_), _) => ("ANALYZING".to_string(), p.info, p.info),
+            (AnalysisState::Failed { .. }, _) => {
+                (self.analysis.label().to_string(), p.danger, p.danger)
+            }
+            _ => (self.analysis.label().to_string(), p.text_faint, p.border),
+        };
+        let open_view = view;
+        let tip = format!(
+            "Analysis: {}. Click for diagnostics.",
+            self.analysis.label()
+        );
+        chip(&text, p)
+            .id("bar-analysis-state")
+            .cursor_pointer()
+            .border_color(border)
+            .text_color(color)
+            .hover(|style| style.bg(p.raised_hover))
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .on_click(move |_, _, cx| {
+                open_view.update(cx, |shell, cx| {
+                    shell.analysis_panel = Some(AnalysisPanel::Diagnostics);
+                    cx.notify();
+                });
+            })
+            .into_any_element()
+    }
+
     fn top_bar(&self, layout: ShellLayout, p: Palette, view: Entity<Self>) -> AnyElement {
         let target = layout.touch_target();
         let view_chip = action_button(
@@ -1254,12 +1623,29 @@ impl NcaShell {
             p,
             view.clone(),
             move |shell, _, cx| {
+                shell.settings_focus = None;
                 shell.state.settings_open = true;
                 cx.notify();
             },
         );
 
-        let analyze = placeholder_button("bar-analyze", "ANALYZE", p);
+        let analyzing = self.analysis.is_running();
+        let can_analyze = self
+            .state
+            .loaded
+            .as_ref()
+            .is_some_and(|loaded| loaded.program.is_some())
+            && !analyzing;
+        let analyze = action_button(
+            "bar-analyze",
+            if analyzing { "ANALYZING" } else { "ANALYZE" },
+            can_analyze,
+            analyzing,
+            p,
+            view.clone(),
+            move |shell, _, cx| shell.begin_analysis(cx),
+        );
+        let analysis_chip = self.analysis_chip(p, view.clone());
         let export = placeholder_button("bar-export", "EXPORT", p);
         let tool_button = self.tool_chip_button("bar-tool", p, view.clone());
 
@@ -1275,6 +1661,7 @@ impl NcaShell {
             .child(three_d)
             .child(stock)
             .child(tool_button)
+            .child(analysis_chip)
             .child(analyze)
             .child(export)
             .child(settings);
@@ -1543,10 +1930,8 @@ impl NcaShell {
                     },
                 )
                 .tooltip(|window, cx| {
-                    Tooltip::new(
-                        "No diagnostics are loaded in this build; the warning overlay is reserved.",
-                    )
-                    .build(window, cx)
+                    Tooltip::new("Draw analysis warning and error segments over the toolpath.")
+                        .build(window, cx)
                 }),
             );
 
@@ -1998,6 +2383,15 @@ impl NcaShell {
                     .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)),
             );
         }
+        strip = strip.child(chip("GENERIC ASSUMED", p).id("status-dialect").tooltip(
+            |window, cx| {
+                Tooltip::new(
+                    "No dialect is configured in v0.1, so parsing and analysis use \
+                         Generic semantics and label it assumed.",
+                )
+                .build(window, cx)
+            },
+        ));
 
         let parse = self.state.parse_state();
         let parse_color = match parse {
@@ -2029,6 +2423,546 @@ impl NcaShell {
                 .child("ADVISORY ONLY | NO CONTROLLER"),
         );
         strip.into_any_element()
+    }
+
+    fn analysis_dock(&self, layout: ShellLayout, p: Palette, view: Entity<Self>) -> AnyElement {
+        let mut dock = v_flex()
+            .flex_shrink_0()
+            .border_t_1()
+            .border_color(p.border)
+            .bg(p.panel_alt);
+        if let Some(panel) = self.analysis_panel {
+            dock = dock.child(self.analysis_panel_body(layout, panel, p, view.clone()));
+        }
+        dock.child(self.analysis_tab_strip(p, view))
+            .into_any_element()
+    }
+
+    fn analysis_tab_strip(&self, p: Palette, view: Entity<Self>) -> AnyElement {
+        let counts = self
+            .analysis
+            .report()
+            .map(|report| SeverityCounts::from_report(report));
+        let diagnostics_label = counts.map_or_else(
+            || "DIAGNOSTICS".to_string(),
+            |counts| format!("DIAGNOSTICS {}", counts.compact()),
+        );
+        let coverage_label = self.analysis.report().map_or_else(
+            || "COVERAGE".to_string(),
+            |report| format!("COVERAGE {}", coverage_summary(&report.coverage)),
+        );
+        let diag_active = self.analysis_panel == Some(AnalysisPanel::Diagnostics);
+        let coverage_active = self.analysis_panel == Some(AnalysisPanel::Coverage);
+
+        let mut strip = h_flex()
+            .h(px(34.0))
+            .flex_shrink_0()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .border_t_1()
+            .border_color(p.border)
+            .bg(p.panel_alt)
+            .child(compact_toggle(
+                "analysis-tab-diagnostics",
+                &diagnostics_label,
+                diag_active,
+                p,
+                view.clone(),
+                move |shell, _, cx| {
+                    shell.analysis_panel = if diag_active {
+                        None
+                    } else {
+                        Some(AnalysisPanel::Diagnostics)
+                    };
+                    cx.notify();
+                },
+            ))
+            .child(compact_toggle(
+                "analysis-tab-coverage",
+                &coverage_label,
+                coverage_active,
+                p,
+                view.clone(),
+                move |shell, _, cx| {
+                    shell.analysis_panel = if coverage_active {
+                        None
+                    } else {
+                        Some(AnalysisPanel::Coverage)
+                    };
+                    cx.notify();
+                },
+            ))
+            .child(chip(self.analysis.label(), p))
+            .child(div().flex_1());
+        if let Some(report) = self.analysis.report()
+            && !report.truncated.is_empty()
+        {
+            strip = strip.child(
+                chip("TRUNCATED", p)
+                    .id("analysis-truncated")
+                    .text_color(p.warning)
+                    .border_color(p.warning)
+                    .tooltip(|window, cx| {
+                        Tooltip::new(
+                            "The report cap dropped findings; the report lists the count per rule.",
+                        )
+                        .build(window, cx)
+                    }),
+            );
+        }
+        strip = strip.child(
+            div()
+                .text_size(px(8.0))
+                .font_weight(FontWeight::BOLD)
+                .text_color(p.text_faint)
+                .child("COVERAGE IS NOT A SAFETY VERDICT"),
+        );
+        if self.analysis.is_running() {
+            strip = strip.child(compact_toggle(
+                "analysis-cancel",
+                "CANCEL",
+                false,
+                p,
+                view,
+                move |shell, _, cx| shell.cancel_analysis(cx),
+            ));
+        }
+        strip.into_any_element()
+    }
+
+    fn analysis_panel_body(
+        &self,
+        layout: ShellLayout,
+        panel: AnalysisPanel,
+        p: Palette,
+        view: Entity<Self>,
+    ) -> AnyElement {
+        let body = match panel {
+            AnalysisPanel::Diagnostics => self.diagnostics_panel_body(layout, p, view),
+            AnalysisPanel::Coverage => self.coverage_panel_body(p, view),
+        };
+        div()
+            .h(px(layout.analysis_panel_height()))
+            .flex_shrink_0()
+            .overflow_hidden()
+            .child(body)
+            .into_any_element()
+    }
+
+    fn analysis_empty_state(&self, p: Palette) -> Div {
+        let (title, detail) = match &self.analysis {
+            AnalysisState::Idle => (
+                "NO ANALYSIS YET",
+                "Press ANALYZE to run the rule registry against this program.",
+            ),
+            AnalysisState::Running(_) => (
+                "ANALYZING",
+                "Rules run off the UI thread; the viewer stays interactive.",
+            ),
+            AnalysisState::Failed { message, .. } => ("ANALYSIS FAILED", message.as_str()),
+            AnalysisState::Canceled => (
+                "ANALYSIS CANCELED",
+                "The previous result was discarded and no report is shown.",
+            ),
+            AnalysisState::Ready { .. } => ("NO FINDINGS", "The report has no diagnostics."),
+        };
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_1()
+            .p_3()
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(p.text_dim)
+                    .child(title),
+            )
+            .child(
+                div()
+                    .max_w(px(560.0))
+                    .text_size(px(9.5))
+                    .text_color(p.text_faint)
+                    .child(detail.to_string()),
+            )
+    }
+
+    fn diagnostics_panel_body(
+        &self,
+        layout: ShellLayout,
+        p: Palette,
+        view: Entity<Self>,
+    ) -> AnyElement {
+        let Some(report) = self.analysis.report().cloned() else {
+            return self.analysis_empty_state(p).into_any_element();
+        };
+        let counts = SeverityCounts::from_report(&report);
+        let filter = self.diagnostic_filter();
+        let indices = Arc::new(filter.indices(&report));
+        let filtered_count = indices.len();
+        let selected = self.selected_diagnostic;
+        let total = counts.total();
+
+        let mut severities = h_flex().items_center().gap_1();
+        for severity in SeverityFilter::ALL {
+            let active = self.severity_filter == severity;
+            severities = severities.child(compact_toggle(
+                severity_filter_id(severity),
+                severity.label(),
+                active,
+                p,
+                view.clone(),
+                move |shell, _, cx| {
+                    shell.severity_filter = severity;
+                    cx.notify();
+                },
+            ));
+        }
+        let rule_input = self.diagnostic_rule_input.clone();
+        let search_input = self.diagnostic_search_input.clone();
+        let header = v_flex()
+            .flex_shrink_0()
+            .gap_1()
+            .p_2()
+            .border_b_1()
+            .border_color(p.border)
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(section_label("DIAGNOSTICS", p))
+                    .child(
+                        chip(&format!("{} ERRORS", counts.errors), p)
+                            .text_color(if counts.errors > 0 {
+                                p.danger
+                            } else {
+                                p.text_faint
+                            })
+                            .border_color(if counts.errors > 0 {
+                                p.danger
+                            } else {
+                                p.border
+                            }),
+                    )
+                    .child(
+                        chip(&format!("{} WARNINGS", counts.warnings), p)
+                            .text_color(if counts.warnings > 0 {
+                                p.warning
+                            } else {
+                                p.text_faint
+                            })
+                            .border_color(if counts.warnings > 0 {
+                                p.warning
+                            } else {
+                                p.border
+                            }),
+                    )
+                    .child(chip(&format!("{} INFO", counts.info), p))
+                    .child(chip(&format!("{filtered_count} OF {total}"), p))
+                    .child(div().flex_1())
+                    .child(severities),
+            )
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .child(compact_input(
+                        "diagnostic-rule",
+                        &rule_input,
+                        "RULE OR CATEGORY",
+                        p,
+                    ))
+                    .child(compact_input(
+                        "diagnostic-search",
+                        &search_input,
+                        "MESSAGE, RULE, OR LINE",
+                        p,
+                    )),
+            );
+
+        let list_report = Arc::clone(&report);
+        let list_view = view.clone();
+        let list = if filtered_count == 0 {
+            let message = if total == 0 {
+                "No findings in this report."
+            } else {
+                "No finding matches this filter."
+            };
+            v_flex()
+                .flex_1()
+                .min_h(px(0.0))
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(p.text_faint)
+                        .child(message),
+                )
+                .into_any_element()
+        } else {
+            uniform_list("diagnostic-list", filtered_count, move |range, _, _| {
+                range
+                    .filter_map(|visible| {
+                        let index = *indices.get(visible)?;
+                        let diagnostic = list_report.diagnostics.get(index)?;
+                        Some(
+                            diagnostic_row(
+                                index,
+                                diagnostic,
+                                selected == Some(index),
+                                p,
+                                list_view.clone(),
+                            )
+                            .into_any_element(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .flex_1()
+            .min_h(px(0.0))
+            .track_scroll(&self.diagnostics_scroll)
+            .into_any_element()
+        };
+
+        let detail = self.diagnostic_detail(&report, p);
+        let detail_width = (layout.width * 0.34).clamp(300.0, 430.0);
+
+        h_flex()
+            .size_full()
+            .min_h(px(0.0))
+            .items_stretch()
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .child(header)
+                    .child(list),
+            )
+            .child(
+                div()
+                    .w(px(detail_width))
+                    .flex_shrink_0()
+                    .border_l_1()
+                    .border_color(p.border)
+                    .bg(p.panel)
+                    .child(detail),
+            )
+            .into_any_element()
+    }
+
+    fn diagnostic_detail(&self, report: &Report, p: Palette) -> AnyElement {
+        let Some(index) = self.selected_diagnostic else {
+            return v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .p_3()
+                .child(
+                    div().text_size(px(9.5)).text_color(p.text_faint).child(
+                        "Select a finding for its rule, basis, evidence, and why it matters.",
+                    ),
+                )
+                .into_any_element();
+        };
+        let Some(diagnostic) = report.diagnostics.get(index) else {
+            return div().into_any_element();
+        };
+        let note = self.rule_catalog.note(diagnostic.rule.as_str());
+        let mut detail = v_flex()
+            .id("diagnostic-detail")
+            .size_full()
+            .min_h(px(0.0))
+            .overflow_y_scrollbar()
+            .gap_1()
+            .p_2()
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .flex_wrap()
+                    .child(severity_chip(diagnostic.severity, p))
+                    .child(chip(diagnostic.rule.as_str(), p))
+                    .child(chip(
+                        diagnostic.basis.label().to_ascii_uppercase().as_str(),
+                        p,
+                    ))
+                    .child(div().flex_1())
+                    .child(chip(
+                        &if diagnostic.line_end > diagnostic.line {
+                            format!("L{}-{}", diagnostic.line, diagnostic.line_end)
+                        } else {
+                            format!("L{}:{}", diagnostic.line, diagnostic.column)
+                        },
+                        p,
+                    )),
+            )
+            .child(
+                div()
+                    .text_size(px(10.5))
+                    .text_color(p.text)
+                    .child(diagnostic.message.clone()),
+            );
+        if let Some(note) = note {
+            detail = detail.child(
+                v_flex()
+                    .gap_0()
+                    .child(
+                        div()
+                            .text_size(px(8.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(p.text_faint)
+                            .child("WHY IT MATTERS"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(9.5))
+                            .text_color(p.text_dim)
+                            .child(note.why_it_matters.clone()),
+                    ),
+            );
+        } else {
+            detail = detail.child(
+                div()
+                    .text_size(px(9.0))
+                    .text_color(p.warning)
+                    .child("No description for this rule id in the current registry."),
+            );
+        }
+        if !diagnostic.evidence.is_empty() {
+            let mut table = v_flex().gap_0().child(
+                div()
+                    .text_size(px(8.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(p.text_faint)
+                    .child("EVIDENCE"),
+            );
+            for (key, value) in &diagnostic.evidence {
+                table = table.child(
+                    h_flex()
+                        .items_start()
+                        .gap_2()
+                        .child(
+                            div()
+                                .w(px(128.0))
+                                .flex_shrink_0()
+                                .truncate()
+                                .text_size(px(8.5))
+                                .font_family(self.mono.clone())
+                                .text_color(p.text_dim)
+                                .child(key.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .text_size(px(8.5))
+                                .font_family(self.mono.clone())
+                                .text_color(p.text)
+                                .child(value.display_text()),
+                        ),
+                );
+            }
+            detail = detail.child(table);
+        }
+        detail.into_any_element()
+    }
+
+    fn coverage_panel_body(&self, p: Palette, view: Entity<Self>) -> AnyElement {
+        let Some(report) = self.analysis.report().cloned() else {
+            return v_flex()
+                .size_full()
+                .gap_2()
+                .p_2()
+                .child(
+                    div()
+                        .text_size(px(10.0))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(p.text_dim)
+                        .child(crate::analysis_ui::COVERAGE_EMPTY_NOTE),
+                )
+                .child(self.analysis_empty_state(p))
+                .into_any_element();
+        };
+        let coverage = &report.coverage;
+        let groups = coverage_groups(coverage);
+        let header = v_flex()
+            .flex_shrink_0()
+            .gap_1()
+            .p_2()
+            .border_b_1()
+            .border_color(p.border)
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(section_label("COVERAGE", p))
+                    .child(chip(&coverage_summary(coverage), p))
+                    .child(chip(&coverage_rule_summary(coverage), p))
+                    .child(chip(&format!("{} ENTRIES", coverage.skipped_count()), p))
+                    .child(chip(
+                        &format!("{} RULES REGISTERED", self.rule_catalog.len()),
+                        p,
+                    ))
+                    .child(div().flex_1())
+                    .child(
+                        chip("NOT A SAFETY VERDICT", p)
+                            .text_color(p.warning)
+                            .border_color(p.warning),
+                    ),
+            )
+            .child(
+                div()
+                    .max_w(px(980.0))
+                    .text_size(px(9.0))
+                    .text_color(p.text_faint)
+                    .child(crate::analysis_ui::COVERAGE_NOTE),
+            );
+
+        let mut rows = v_flex().gap_1().p_2();
+        if groups.is_empty() {
+            rows = rows.child(
+                div()
+                    .text_size(px(10.0))
+                    .text_color(p.text_dim)
+                    .child("Every registered rule was evaluated for this program."),
+            );
+        }
+        for group in &groups {
+            rows = rows.child(coverage_group_card(group, p, view.clone()));
+        }
+        v_flex()
+            .size_full()
+            .min_h(px(0.0))
+            .child(header)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .overflow_y_scrollbar()
+                    .child(rows),
+            )
+            .into_any_element()
+    }
+
+    fn coverage_action(
+        &mut self,
+        target: CoverageTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match target {
+            CoverageTarget::Tool(number) => self.open_tool_popover_for(number, window, cx),
+            CoverageTarget::Machine | CoverageTarget::Material | CoverageTarget::Stock => {
+                self.settings_focus = Some(target);
+                self.state.settings_open = true;
+                cx.notify();
+            }
+            CoverageTarget::RuleDisabled | CoverageTarget::Other => {}
+        }
     }
 
     fn workspace(&self, layout: ShellLayout, p: Palette, view: Entity<Self>) -> AnyElement {
@@ -2107,6 +3041,7 @@ impl NcaShell {
         let row_lines = Arc::clone(&loaded.lines);
         let mono = self.mono.clone();
         let row_index = index.clone();
+        let row_severities = Arc::clone(&self.line_severity_map);
 
         let body = if visible_count == 0 {
             v_flex()
@@ -2140,6 +3075,7 @@ impl NcaShell {
                             program_row(
                                 line,
                                 row_index.has_error(line.number),
+                                row_severities.get(&line.number).copied(),
                                 selected == Some(line.number),
                                 palette,
                                 mono.clone(),
@@ -2302,6 +3238,43 @@ impl NcaShell {
         self.canvas_contents(card, p, view, layout.legend_inline())
     }
 
+    /// Analysis overlays for the current frame.
+    ///
+    /// The warning/error line sets come from the accepted report; the highlight
+    /// is the SIMULATE current line or the selected view line. In SIMULATE the
+    /// current line is emphasized after the overlay so it keeps priority.
+    fn viewer_overlay(&self) -> Option<ViewerOverlay> {
+        let highlight_line = if self.state.mode == AppMode::Simulate {
+            self.sim
+                .as_ref()
+                .map(|session| session.simulation.snapshot().current_line)
+                .filter(|line| *line > 0)
+        } else {
+            self.state.selected_line
+        };
+        let has_report = self.analysis.report().is_some();
+        if !has_report && highlight_line.is_none() {
+            return None;
+        }
+        let (error_lines, warning_lines) =
+            if has_report && self.toggles.warnings && !self.overlay_lines.is_empty() {
+                (
+                    Arc::from(self.overlay_lines.errors.clone()),
+                    Arc::from(self.overlay_lines.warnings.clone()),
+                )
+            } else {
+                (
+                    Arc::from(Vec::<usize>::new()),
+                    Arc::from(Vec::<usize>::new()),
+                )
+            };
+        Some(ViewerOverlay {
+            error_lines,
+            warning_lines,
+            highlight_line,
+        })
+    }
+
     fn canvas_card_portrait(
         &self,
         layout: ShellLayout,
@@ -2344,6 +3317,7 @@ impl NcaShell {
         let zoom = self.viewer.zoom_percent();
         let parse_errors = loaded.is_some_and(|loaded| !loaded.errors.is_empty());
         let preview = loaded.is_none();
+        let overlay = self.viewer_overlay();
 
         card = card.child(viewer::view(
             &self.viewer,
@@ -2354,6 +3328,7 @@ impl NcaShell {
             visibility,
             preview,
             sim.clone(),
+            overlay,
             view.clone(),
         ));
 
@@ -2364,6 +3339,28 @@ impl NcaShell {
             .gap_1()
             .child(chip(mode.label(), p))
             .child(chip(&format!("{zoom}%"), p));
+        if self.analysis.report().is_some() {
+            top_left = top_left.child(
+                compact_toggle(
+                    "view-toggle-warnings",
+                    if self.toggles.warnings {
+                        "WARN ON"
+                    } else {
+                        "WARN OFF"
+                    },
+                    self.toggles.warnings,
+                    p,
+                    view.clone(),
+                    move |shell, _, cx| {
+                        shell.toggles.warnings = !shell.toggles.warnings;
+                        cx.notify();
+                    },
+                )
+                .tooltip(|window, cx| {
+                    Tooltip::new("Toggle analysis warning and error overlays.").build(window, cx)
+                }),
+            );
+        }
         if self.state.mode == AppMode::Simulate
             && let Some(sim) = &sim
         {
@@ -2743,28 +3740,11 @@ impl NcaShell {
                 move |shell, _, cx| shell.set_theme(mode, cx),
             ));
         }
-        let placeholder = |title: &'static str, detail: &'static str| {
-            v_flex()
-                .gap_1()
-                .p_2()
-                .rounded(px(8.0))
-                .border_1()
-                .border_color(p.border)
-                .bg(p.panel_alt)
-                .child(
-                    div()
-                        .text_size(px(10.0))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(p.text_dim)
-                        .child(title),
-                )
-                .child(
-                    div()
-                        .text_size(px(9.5))
-                        .text_color(p.text_faint)
-                        .child(detail),
-                )
-        };
+        let placeholder =
+            |title: &'static str, detail: &'static str, target: Option<CoverageTarget>| {
+                let focused = target.is_some_and(|target| self.settings_focus == Some(target));
+                settings_placeholder(title, detail, focused, p)
+            };
         overlay_layer(layout, p)
             .child(
                 v_flex()
@@ -2794,6 +3774,7 @@ impl NcaShell {
                                 view.clone(),
                                 move |shell, _, cx| {
                                     shell.state.settings_open = false;
+                                    shell.settings_focus = None;
                                     cx.notify();
                                 },
                             )),
@@ -2807,18 +3788,36 @@ impl NcaShell {
                     .child(
                         v_flex()
                             .gap_2()
-                            .child(section_label("RESERVED FOR THE ANALYSIS MILESTONE", p))
+                            .child(section_label("SETUP SHEET PLACEHOLDER", p))
                             .child(placeholder(
-                                "STOCK AND TOOLS",
-                                "Explicit stock and tools arrive with the setup sheet.",
+                                "STOCK - EXPLICIT",
+                                "Analysis infers stock from the toolpath. Explicit stock \
+                                 origin and size are a setup-sheet field in the next milestone.",
+                                Some(CoverageTarget::Stock),
+                            ))
+                            .child(placeholder(
+                                "MACHINE LIMITS",
+                                "Travel, maximum feed, maximum spindle speed, and manual-spindle \
+                                 mode are not set in v0.1. Rules that need them stay skipped.",
+                                Some(CoverageTarget::Machine),
+                            ))
+                            .child(placeholder(
+                                "MATERIAL PRESET",
+                                "No material preset is set in v0.1. Chipload and surface-speed \
+                                 rules stay skipped until one is available.",
+                                Some(CoverageTarget::Material),
+                            ))
+                            .child(placeholder(
+                                "TOOLS",
+                                "Use the tool chip or a coverage SET TOOL action to set diameter, \
+                                 shape, and flute count. The full tool inventory is a later milestone.",
+                                None,
                             ))
                             .child(placeholder(
                                 "RULES AND COVERAGE",
-                                "Rule counts and skipped reasons arrive with analysis.",
-                            ))
-                            .child(placeholder(
-                                "MACHINE AND MATERIAL",
-                                "Machine limits and presets arrive with the simulator.",
+                                "Per-rule thresholds and disabled-rule toggles are not editable in \
+                                 v0.1. The coverage panel lists every skipped rule and reason.",
+                                None,
                             )),
                     )
                     .child(
@@ -3089,6 +4088,62 @@ impl NcaShell {
             .into_any_element()
     }
 
+    fn analysis_error_strip(&self, p: Palette, view: Entity<Self>) -> AnyElement {
+        let Some(message) = self.analysis.failure() else {
+            return div().into_any_element();
+        };
+        let dismiss_view = view;
+        h_flex()
+            .min_h(px(36.0))
+            .flex_shrink_0()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .border_b_1()
+            .border_color(p.danger)
+            .bg(p.danger.alpha(0.12))
+            .child(
+                div()
+                    .text_size(px(9.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(p.danger)
+                    .child("ANALYSIS FAILED"),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .text_size(px(10.0))
+                    .text_color(p.text)
+                    .child(message.to_string()),
+            )
+            .child(
+                div()
+                    .id("analysis-error-dismiss")
+                    .h(px(28.0))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .rounded(px(5.0))
+                    .border_1()
+                    .border_color(p.border)
+                    .bg(p.panel_alt)
+                    .text_size(px(8.5))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(p.text_dim)
+                    .hover(|style| style.bg(p.raised_hover))
+                    .on_click(move |_, _, cx| {
+                        dismiss_view.update(cx, |shell, cx| {
+                            shell.analysis = AnalysisState::Idle;
+                            cx.notify();
+                        });
+                    })
+                    .child("DISMISS"),
+            )
+            .into_any_element()
+    }
+
     fn error_strip(&self, p: Palette, view: Entity<Self>) -> AnyElement {
         let Some(message) = self.load_error.clone() else {
             return div().into_any_element();
@@ -3154,6 +4209,7 @@ impl HasViewer for NcaShell {
 
 impl Render for NcaShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.poll_analysis(cx);
         self.state.ensure_index();
         if self.state.mode == AppMode::Simulate {
             self.poll_seek(cx);
@@ -3188,11 +4244,13 @@ impl Render for NcaShell {
             .child(self.top_bar(layout, p, view.clone()))
             .child(self.status_strip(p))
             .child(self.sim_error_strip(p, view.clone()))
+            .child(self.analysis_error_strip(p, view.clone()))
             .child(self.error_strip(p, view.clone()));
         if self.state.mode == AppMode::Simulate {
             root = root.child(self.transport_bar(p, view.clone()));
         }
         root = root.child(self.workspace(layout, p, view.clone()));
+        root = root.child(self.analysis_dock(layout, p, view.clone()));
 
         if self.tool_popover_open {
             root = root.child(self.tool_popover(layout, p, view.clone()));
@@ -3218,6 +4276,61 @@ impl Render for NcaShell {
 fn portrait_program_height(layout: ShellLayout) -> f32 {
     let reserved = layout.viewer_height + TOUCH_TARGET + 4.0 * crate::layout::GAP;
     (layout.content_height() - reserved).max(320.0)
+}
+
+/// A labeled placeholder section in the settings sheet.
+///
+/// `focused` highlights the section a coverage action asked for. It is a
+/// placeholder, never an editable field, so it cannot pretend to supply data.
+fn settings_placeholder(
+    title: &'static str,
+    detail: &'static str,
+    focused: bool,
+    p: Palette,
+) -> Div {
+    let mut section = v_flex()
+        .gap_1()
+        .p_2()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(if focused { p.accent } else { p.border })
+        .bg(if focused { p.accent_muted } else { p.panel_alt })
+        .child(
+            h_flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(px(10.0))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(if focused { p.accent } else { p.text_dim })
+                        .child(title),
+                )
+                .child(chip("PLACEHOLDER", p))
+                .child(if focused {
+                    chip("REQUESTED FROM COVERAGE", p)
+                        .text_color(p.accent)
+                        .border_color(p.accent)
+                } else {
+                    chip("NOT EDITABLE YET", p)
+                }),
+        )
+        .child(
+            div()
+                .text_size(px(9.5))
+                .text_color(p.text_faint)
+                .child(detail),
+        );
+    if focused {
+        section = section.child(
+            div()
+                .text_size(px(8.5))
+                .font_weight(FontWeight::BOLD)
+                .text_color(p.warning)
+                .child("This section cannot set a value in v0.1, so the rule stays skipped."),
+        );
+    }
+    section
 }
 
 /// A filled chip.
@@ -3437,10 +4550,231 @@ fn overlay_layer(layout: ShellLayout, p: Palette) -> Div {
         .bg(p.scrim)
 }
 
+fn severity_filter_id(filter: SeverityFilter) -> &'static str {
+    match filter {
+        SeverityFilter::All => "diagnostic-filter-all",
+        SeverityFilter::Errors => "diagnostic-filter-errors",
+        SeverityFilter::Warnings => "diagnostic-filter-warnings",
+        SeverityFilter::Info => "diagnostic-filter-info",
+    }
+}
+
+fn severity_color(severity: AnalysisSeverity, p: Palette) -> Hsla {
+    match severity {
+        AnalysisSeverity::Error => p.danger,
+        AnalysisSeverity::Warning => p.warning,
+        AnalysisSeverity::Info => p.info,
+    }
+}
+
+fn severity_chip(severity: AnalysisSeverity, p: Palette) -> Div {
+    let color = severity_color(severity, p);
+    chip(severity.label().to_ascii_uppercase().as_str(), p)
+        .text_color(color)
+        .border_color(color)
+}
+
+/// One compact input row used by the diagnostics filter header.
+fn compact_input(
+    id: &'static str,
+    input: &Entity<InputState>,
+    placeholder: &'static str,
+    p: Palette,
+) -> Stateful<Div> {
+    let input = input.clone();
+    let focus_input = input.clone();
+    div()
+        .id(id)
+        .flex_1()
+        .min_w(px(0.0))
+        .h(px(30.0))
+        .flex()
+        .items_center()
+        .overflow_hidden()
+        .rounded(px(5.0))
+        .border_1()
+        .border_color(p.border)
+        .bg(p.panel)
+        .px_1()
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            focus_input.update(cx, |state, cx| state.focus(window, cx));
+        })
+        .child(Input::new(&input).h(px(28.0)).w_full().text_size(px(10.0)))
+        .tooltip({
+            let text = placeholder.to_string();
+            move |window, cx| Tooltip::new(text.clone()).build(window, cx)
+        })
+}
+
+/// One 48 px finding row.
+fn diagnostic_row(
+    index: usize,
+    diagnostic: &nc_analysis::Diagnostic,
+    selected: bool,
+    p: Palette,
+    view: Entity<NcaShell>,
+) -> Stateful<Div> {
+    let color = severity_color(diagnostic.severity, p);
+    let rule = diagnostic.rule.as_str().to_string();
+    let message = diagnostic.message.clone();
+    let line = diagnostic.line;
+    div()
+        .id(format!("diagnostic-row-{index}"))
+        .h(px(TOUCH_TARGET))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_2()
+        .bg(if selected { p.accent_muted } else { p.panel })
+        .border_l(px(3.0))
+        .border_color(if selected { p.accent } else { p.panel })
+        .cursor_pointer()
+        .hover(|style| style.bg(p.raised))
+        .on_click(move |_, _, cx| {
+            view.update(cx, |shell, cx| shell.select_diagnostic(index, cx));
+        })
+        .child(
+            div()
+                .w(px(9.0))
+                .h(px(9.0))
+                .flex_shrink_0()
+                .rounded(px(5.0))
+                .bg(color),
+        )
+        .child(
+            div()
+                .w(px(158.0))
+                .flex_shrink_0()
+                .truncate()
+                .text_size(px(8.5))
+                .font_weight(FontWeight::BOLD)
+                .text_color(color)
+                .child(rule),
+        )
+        .child(
+            div()
+                .w(px(44.0))
+                .flex_shrink_0()
+                .text_size(px(9.0))
+                .font_family("monospace")
+                .text_color(p.text_faint)
+                .child(format!("L{line}")),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .truncate()
+                .text_size(px(10.0))
+                .text_color(p.text)
+                .child(message),
+        )
+}
+
+fn coverage_group_card(group: &CoverageGroup, p: Palette, view: Entity<NcaShell>) -> Div {
+    let target = group.target;
+    let missing = group.missing_input.clone();
+    let mut entries = v_flex().gap_0();
+    for entry in &group.entries {
+        entries = entries.child(
+            h_flex()
+                .items_start()
+                .gap_2()
+                .child(
+                    div()
+                        .w(px(190.0))
+                        .flex_shrink_0()
+                        .truncate()
+                        .text_size(px(8.5))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(p.text_dim)
+                        .child(entry.rule.clone()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .text_size(px(9.0))
+                        .text_color(p.text_faint)
+                        .child(entry.reason.clone()),
+                ),
+        );
+    }
+    let action = match target.action_label() {
+        Some(label) => {
+            let action_view = view;
+            let id = format!("coverage-action-{}", group.missing_input);
+            div()
+                .id(id)
+                .h(px(24.0))
+                .px_2()
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .rounded(px(5.0))
+                .border_1()
+                .border_color(p.accent)
+                .bg(p.accent_muted)
+                .text_size(px(8.0))
+                .font_weight(FontWeight::BOLD)
+                .text_color(p.accent)
+                .cursor_pointer()
+                .hover(|style| style.bg(p.raised_hover))
+                .on_click(move |_, window, cx| {
+                    action_view.update(cx, |shell, cx| {
+                        shell.coverage_action(target, window, cx);
+                    });
+                })
+                .child(label)
+                .into_any_element()
+        }
+        None => chip(
+            match target {
+                CoverageTarget::RuleDisabled => "DISABLED",
+                _ => "NO EDITOR",
+            },
+            p,
+        )
+        .into_any_element(),
+    };
+    v_flex()
+        .gap_1()
+        .p_2()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(p.border)
+        .bg(p.panel)
+        .child(
+            h_flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(px(9.5))
+                        .font_weight(FontWeight::BOLD)
+                        .font_family("monospace")
+                        .text_color(p.text)
+                        .child(missing.clone()),
+                )
+                .child(chip(&format!("{} RULES", group.entries.len()), p))
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .text_size(px(8.5))
+                        .text_color(p.text_faint)
+                        .child(target.description()),
+                )
+                .child(action),
+        )
+        .child(entries)
+}
+
 /// One 48 px program row.
 fn program_row(
     line: &SourceLine,
     has_error: bool,
+    severity: Option<AnalysisSeverity>,
     selected: bool,
     p: Palette,
     mono: SharedString,
@@ -3468,6 +4802,14 @@ fn program_row(
     } else {
         p.panel
     };
+    let gutter = match severity {
+        Some(AnalysisSeverity::Error) => p.danger,
+        Some(AnalysisSeverity::Warning) => p.warning,
+        Some(AnalysisSeverity::Info) => p.info,
+        None if has_error => p.danger,
+        None => p.border_strong,
+    };
+    let filled = severity.is_some() || has_error;
     h_flex()
         .id(format!("program-line-{number}"))
         .h(px(TOUCH_TARGET))
@@ -3491,8 +4833,8 @@ fn program_row(
                 .flex_shrink_0()
                 .rounded(px(5.0))
                 .border_1()
-                .border_color(if has_error { p.danger } else { p.border_strong })
-                .bg(if has_error { p.danger } else { p.panel }),
+                .border_color(gutter)
+                .bg(if filled { gutter } else { p.panel }),
         )
         .child(
             div()

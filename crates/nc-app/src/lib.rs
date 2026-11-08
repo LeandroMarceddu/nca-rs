@@ -11,6 +11,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod analysis_ui;
+mod analysis_worker;
 mod file_browser;
 mod layout;
 mod program;
@@ -22,6 +24,8 @@ mod theme;
 mod viewer;
 
 use std::path::PathBuf;
+
+pub use analysis_ui::{AnalysisPanel, AnalysisState, ReviewOptions};
 
 use gpui_kit::{
     AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, application,
@@ -57,6 +61,8 @@ pub struct LaunchOptions {
     pub sim_at: Option<f32>,
     /// Start SIMULATE playback immediately (review convenience).
     pub autoplay: bool,
+    /// Analysis review flags.
+    pub review: ReviewOptions,
 }
 
 impl Default for LaunchOptions {
@@ -72,6 +78,7 @@ impl Default for LaunchOptions {
             simulate: false,
             sim_at: None,
             autoplay: false,
+            review: ReviewOptions::default(),
         }
     }
 }
@@ -82,15 +89,19 @@ impl LaunchOptions {
     /// Supported: `--size WxH` or `--size=WxH`, `--portrait`,
     /// `--light`, `--dark`, `--high-contrast`, `--fullscreen`, `--3d`,
     /// `--browser`, `--simulate`, `--sim-at FRACTION`, `--play`,
+    /// `--analyze`, `--panel diagnostics|coverage`, `--select-rule ID`,
     /// and `--open PATH` or `--open=PATH`.
     ///
     /// `--sim-at` and `--play` imply `--simulate`; the fraction is clamped to
-    /// `0.0..=1.0`.
+    /// `0.0..=1.0`. `--analyze` opens the diagnostics panel unless another
+    /// panel is requested.
     #[must_use]
     pub fn from_args(args: impl IntoIterator<Item = String>) -> Self {
         let args = args.into_iter().collect::<Vec<_>>();
         let (width, height) = window_size_override(&args).unwrap_or((1280.0, 800.0));
         let sim_at = sim_at_argument(&args);
+        let analyze = args.iter().any(|arg| arg == "--analyze");
+        let panel = panel_argument(&args).or(analyze.then_some(AnalysisPanel::Diagnostics));
         Self {
             width,
             height,
@@ -104,6 +115,11 @@ impl LaunchOptions {
                 || args.iter().any(|arg| arg == "--play"),
             sim_at,
             autoplay: args.iter().any(|arg| arg == "--play"),
+            review: ReviewOptions {
+                analyze,
+                panel,
+                select_rule: value_argument(&args, "--select-rule"),
+            },
         }
     }
 }
@@ -118,6 +134,7 @@ pub fn run(options: LaunchOptions) {
     let simulate = options.simulate;
     let sim_at = options.sim_at;
     let autoplay = options.autoplay;
+    let review = options.review.clone();
     let initial_theme = theme;
     application().run(move |cx| {
         gpui_kit::init(cx);
@@ -155,6 +172,7 @@ pub fn run(options: LaunchOptions) {
                     simulate,
                     sim_at,
                     autoplay,
+                    review.clone(),
                     initial_theme,
                     cx,
                 )
@@ -214,6 +232,28 @@ fn open_argument(args: &[String]) -> Option<PathBuf> {
         index += 1;
     }
     None
+}
+
+/// Reads one `--name VALUE` or `--name=VALUE` string.
+fn value_argument(args: &[String], name: &str) -> Option<String> {
+    let mut index = 0;
+    let prefix = format!("{name}=");
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == name {
+            index += 1;
+            return args.get(index).cloned();
+        }
+        if let Some(value) = arg.strip_prefix(&prefix) {
+            return Some(value.to_string());
+        }
+        index += 1;
+    }
+    None
+}
+
+fn panel_argument(args: &[String]) -> Option<AnalysisPanel> {
+    value_argument(args, "--panel").and_then(|value| AnalysisPanel::parse(&value))
 }
 
 fn sim_at_argument(args: &[String]) -> Option<f32> {
@@ -309,5 +349,41 @@ mod tests {
         assert!(!options.fullscreen);
         assert!(!options.simulate);
         assert_eq!(options.sim_at, None);
+        assert_eq!(options.review, ReviewOptions::default());
+    }
+
+    #[test]
+    fn analysis_review_flags_parse() {
+        let options = LaunchOptions::from_args(["--analyze"].map(str::to_string));
+        assert!(options.review.analyze);
+        assert_eq!(
+            options.review.panel,
+            Some(AnalysisPanel::Diagnostics),
+            "--analyze opens diagnostics when no panel is named"
+        );
+
+        let options = LaunchOptions::from_args(
+            [
+                "--panel",
+                "coverage",
+                "--select-rule",
+                "clearance.rapid_at_depth",
+            ]
+            .map(str::to_string),
+        );
+        assert_eq!(options.review.panel, Some(AnalysisPanel::Coverage));
+        assert_eq!(
+            options.review.select_rule.as_deref(),
+            Some("clearance.rapid_at_depth")
+        );
+
+        let options = LaunchOptions::from_args(
+            ["--panel=diagnostics", "--select-rule=x.id"].map(str::to_string),
+        );
+        assert_eq!(options.review.panel, Some(AnalysisPanel::Diagnostics));
+        assert_eq!(options.review.select_rule.as_deref(), Some("x.id"));
+
+        let options = LaunchOptions::from_args(["--panel", "nope"].map(str::to_string));
+        assert_eq!(options.review.panel, None);
     }
 }

@@ -257,3 +257,14 @@ consequence for the contract.
   Requiring a tool number in the comment discarded usable data.
 - **Consequence:** Specific `T<n>` comments win per field; unanchored hints never
   supply a tool name; a `T` after the first motion is never used.
+
+## D029 - The app analyzes with inferred stock until the setup sheet lands
+
+- **Decision:** The app resolves comment/user tools, uses inferred stock, and
+  leaves machine/material unset in this milestone. Coverage exposes every rule
+  that this skips, and the set-value actions for stock/machine/material open a
+  labeled placeholder.
+- **Reason:** Config loading and the setup sheet are a separate milestone; the
+  app must not silently invent stock or machine data.
+- **Consequence:** The app report can differ from a CLI run that supplies a TOML
+  config. The UI labels the stock source and the assumed dialect.
