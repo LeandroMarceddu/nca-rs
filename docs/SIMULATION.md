@@ -14,8 +14,8 @@ does not model cutter force, deflection, chatter, heat, or workholding.
 - The display pose is interpolated between ticks for smooth rendering. It is not
   used by tests.
 - `seek_to_time(t)` targets `floor(t / TICK_S)`. Forward seeks are incremental;
-  backward seeks reset and replay. A long seek runs on the worker thread and is
-  cancellable.
+  backward seeks reset and replay. A long seek runs on the worker thread; stale
+  results are discarded, but v0.1 cannot interrupt one already in progress (D034).
 - `step_motion()` advances to the end of the current span; `step_line()`
   advances to the next line with motion.
 
@@ -129,6 +129,6 @@ need a real stock declare `Explicit` and are skipped with reason
 
 - Stock mesh updates at 15-30 Hz while playing; full resolution when paused.
 - The path plan is not rebuilt on a pose-only update.
-- Long seeks run off the UI thread with progress and cancellation.
+- Long seeks run off the UI thread; stale results are discarded. Mid-run progress and cancellation are a v0.2 follow-up (D034).
 - Above a configurable size, coarsen the grid or skip the engagement pass with
   a coverage skip reason rather than stalling.

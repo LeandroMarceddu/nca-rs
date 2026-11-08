@@ -8,7 +8,7 @@ use nc_analysis::{
     StockConfig, StockRequirement, analyze, rules,
 };
 use nc_core::{Dialect, MachineConfig};
-use nc_gcode::{MotionRecord, MoveKind, Program, ProgramBuilder};
+use nc_gcode::{ArcFormat, ArcRecord, MotionRecord, MoveKind, Plane, Program, ProgramBuilder};
 
 /// Source text with `count` one-word lines so diagnostics can be clamped.
 fn source_lines(count: usize) -> String {
@@ -102,7 +102,9 @@ fn z_below_table_fires_below_the_configured_table() {
         "travel.stock_bounds"
     );
     assert_eq!(report.coverage.skipped[0].missing_input, "stock.explicit");
-    assert_eq!(report.diagnostics.len(), 1);
+    // Both motions touch Z -11: the descent ends there and the retract starts
+    // there. The exact extent of each motion is below the table.
+    assert_eq!(report.diagnostics.len(), 2);
 
     let finding = &report.diagnostics[0];
     assert_eq!(finding.rule.as_str(), "travel.z_below_table");
@@ -123,10 +125,29 @@ fn z_below_table_fires_below_the_configured_table() {
         finding.evidence.get("min_mm"),
         Some(&EvidenceValue::Float(-10.0))
     );
+    assert_eq!(
+        finding.evidence.get("extent_min_mm"),
+        Some(&EvidenceValue::Float(-11.0))
+    );
+    assert_eq!(
+        finding.evidence.get("extent_max_mm"),
+        Some(&EvidenceValue::Float(0.0))
+    );
     assert_eq!(finding.evidence.get("tool"), Some(&EvidenceValue::Int(5)));
     assert_eq!(
         finding.evidence.get("end_mm"),
         Some(&EvidenceValue::Point3([10.0, 0.0, -11.0]))
+    );
+
+    let retract = &report.diagnostics[1];
+    assert_eq!(retract.line, 3);
+    assert_eq!(
+        retract.evidence.get("extent_min_mm"),
+        Some(&EvidenceValue::Float(-11.0))
+    );
+    assert_eq!(
+        retract.evidence.get("extent_max_mm"),
+        Some(&EvidenceValue::Float(5.0))
     );
 }
 
@@ -163,6 +184,61 @@ fn z_below_table_allows_exactly_the_table_z() {
 
     assert_eq!(report.coverage.evaluated, 1);
     assert!(report.diagnostics.is_empty());
+}
+
+#[test]
+fn z_below_table_flags_arc_sweep_below_the_table() {
+    // A full circle in the ZX plane (G18) whose endpoints sit at Z = 1 but
+    // whose sweep reaches Z = -11, one millimetre below the table.
+    let mut arc_motion =
+        MotionRecord::linear(2, 0, MoveKind::ArcCcw, [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]);
+    arc_motion.plane = Plane::Zx;
+    arc_motion.arc = Some(Box::new(ArcRecord {
+        center_mm: [0.0, 0.0, -5.0],
+        radius_mm: 6.0,
+        end_radius_mm: 6.0,
+        start_angle_rad: 0.0,
+        sweep_rad: nc_core::math::TAU,
+        axial_delta_mm: 0.0,
+        format: ArcFormat::Center,
+    }));
+    let program = ProgramBuilder::new().record(arc_motion).build();
+    let config = AnalysisConfig {
+        machine: Some(machine_config()),
+        ..AnalysisConfig::default()
+    };
+    let report = run(
+        &program,
+        &source_lines(2),
+        &config,
+        &registry(rules::travel::rules()),
+    );
+
+    assert_eq!(report.coverage.evaluated, 1);
+    assert_eq!(report.diagnostics.len(), 1, "only the table Z rule applies");
+    let finding = &report.diagnostics[0];
+    assert_eq!(finding.rule.as_str(), "travel.z_below_table");
+    assert_eq!(finding.line, 2);
+    assert_eq!(
+        finding.evidence.get("value_mm"),
+        Some(&EvidenceValue::Float(-11.0))
+    );
+    assert_eq!(
+        finding.evidence.get("min_mm"),
+        Some(&EvidenceValue::Float(-10.0))
+    );
+    assert_eq!(
+        finding.evidence.get("extent_min_mm"),
+        Some(&EvidenceValue::Float(-11.0))
+    );
+    assert_eq!(
+        finding.evidence.get("extent_max_mm"),
+        Some(&EvidenceValue::Float(1.0))
+    );
+    assert_eq!(
+        finding.evidence.get("end_mm"),
+        Some(&EvidenceValue::Point3([0.0, 0.0, 1.0]))
+    );
 }
 
 #[test]
@@ -244,7 +320,9 @@ fn stock_bounds_fires_on_a_cutting_endpoint_outside_the_footprint() {
 
     assert_eq!(report.coverage.evaluated, 2);
     assert!(report.coverage.skipped.is_empty());
-    assert_eq!(report.diagnostics.len(), 1);
+    // The outgoing cut ends at X 70 and the return cut starts there, so both
+    // exact extents leave the footprint.
+    assert_eq!(report.diagnostics.len(), 2);
 
     let finding = &report.diagnostics[0];
     assert_eq!(finding.rule.as_str(), "travel.stock_bounds");
@@ -265,7 +343,22 @@ fn stock_bounds_fires_on_a_cutting_endpoint_outside_the_footprint() {
         finding.evidence.get("end_mm"),
         Some(&EvidenceValue::Point3([70.0, 0.0, -1.0]))
     );
+    assert_eq!(
+        finding.evidence.get("extent_min_mm"),
+        Some(&EvidenceValue::Point3([0.0, 0.0, -1.0]))
+    );
+    assert_eq!(
+        finding.evidence.get("extent_max_mm"),
+        Some(&EvidenceValue::Point3([70.0, 0.0, -1.0]))
+    );
     assert_eq!(finding.evidence.get("tool"), Some(&EvidenceValue::Int(2)));
+
+    let return_cut = &report.diagnostics[1];
+    assert_eq!(return_cut.line, 3);
+    assert_eq!(
+        return_cut.evidence.get("extent_max_mm"),
+        Some(&EvidenceValue::Point3([70.0, 0.0, -1.0]))
+    );
 }
 
 #[test]
@@ -299,6 +392,56 @@ fn stock_bounds_allows_endpoints_exactly_on_the_stock_edge() {
     assert!(
         report.diagnostics.is_empty(),
         "the stock footprint is inclusive"
+    );
+}
+
+#[test]
+fn stock_bounds_flags_arc_sweep_outside_the_footprint() {
+    // A full circle centered near the stock's +Y edge. Its start and end are
+    // the same point at Y = 53, inside the -20..60 footprint, but the sweep
+    // reaches Y = 63.
+    let mut arc_motion =
+        MotionRecord::linear(2, 0, MoveKind::Feed, [0.0, 53.0, -1.0], [0.0, 53.0, -1.0]);
+    arc_motion.plane = Plane::Xy;
+    arc_motion.arc = Some(Box::new(ArcRecord {
+        center_mm: [0.0, 58.0, -1.0],
+        radius_mm: 5.0,
+        end_radius_mm: 5.0,
+        start_angle_rad: -nc_core::math::FRAC_PI_2,
+        sweep_rad: nc_core::math::TAU,
+        axial_delta_mm: 0.0,
+        format: ArcFormat::Center,
+    }));
+    let program = ProgramBuilder::new().record(arc_motion).build();
+    let report = run(
+        &program,
+        &source_lines(2),
+        &explicit_stock_config(),
+        &registry(rules::travel::rules()),
+    );
+
+    assert_eq!(report.coverage.evaluated, 2);
+    assert!(report.coverage.skipped.is_empty());
+    assert_eq!(report.diagnostics.len(), 1);
+    let finding = &report.diagnostics[0];
+    assert_eq!(finding.rule.as_str(), "travel.stock_bounds");
+    assert_eq!(finding.line, 2);
+    assert!(
+        finding.message.contains("outside the stock XY footprint"),
+        "{}",
+        finding.message
+    );
+    assert_eq!(
+        finding.evidence.get("extent_min_mm"),
+        Some(&EvidenceValue::Point3([-5.0, 53.0, -1.0]))
+    );
+    assert_eq!(
+        finding.evidence.get("extent_max_mm"),
+        Some(&EvidenceValue::Point3([5.0, 63.0, -1.0]))
+    );
+    assert_eq!(
+        finding.evidence.get("end_mm"),
+        Some(&EvidenceValue::Point3([0.0, 53.0, -1.0]))
     );
 }
 

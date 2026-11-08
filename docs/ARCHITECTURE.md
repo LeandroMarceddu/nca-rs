@@ -54,8 +54,9 @@ crates do not import `nc-viewer` directly.
 
 - **UI thread:** GPUI rendering and input only. It never parses a file, runs a
   rule, or replays a long seek.
-- **Worker thread:** file read, parse, analysis, and long simulation seeks. It
-  reports progress and accepts a cancel flag.
+- **Worker thread:** file read, parse, analysis, and long simulation seeks.
+  Results are generation-gated so stale work is discarded. Mid-run progress
+  and cancellation inside a long rule/seek are a v0.2 follow-up (D034).
 - **Playback clock:** the app's frame loop advances the `Simulation` with the
   elapsed wall time; the simulation itself is pure and deterministic.
 - No async runtime. A bounded `crossbeam-channel` plus a worker thread is

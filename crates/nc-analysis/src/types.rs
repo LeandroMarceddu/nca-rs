@@ -136,12 +136,19 @@ pub enum EvidenceValue {
 
 impl EvidenceValue {
     /// Quantizes a float to `decimals` places; other variants are unchanged.
+    ///
+    /// Rounding and the decimal factor go through [`nc_core::math`], so the
+    /// result does not depend on the platform libm. At most 15 decimals are
+    /// used, the largest power of ten that is exactly representable in `f64`.
     #[must_use]
     pub fn quantized(self, decimals: u32) -> Self {
         match self {
             Self::Float(value) => {
-                let factor = 10_f64.powi(decimals as i32);
-                Self::Float((value * factor).round() / factor)
+                let factor = decimal_factor(decimals);
+                if !factor.is_finite() || factor == 0.0 {
+                    return Self::Float(value);
+                }
+                Self::Float(nc_core::math::round(value * factor) / factor)
             }
             other => other,
         }
@@ -160,6 +167,18 @@ impl EvidenceValue {
             }
         }
     }
+}
+
+/// Returns `10^decimals` as an exactly representable `f64` factor.
+///
+/// A small multiplication loop avoids `f64::powi`, and the cap keeps the factor
+/// exact: `10^15` is below `2^53`, while larger powers lose integer precision.
+fn decimal_factor(decimals: u32) -> f64 {
+    let mut factor = 1.0;
+    for _ in 0..decimals.min(15) {
+        factor *= 10.0;
+    }
+    factor
 }
 
 #[cfg(test)]

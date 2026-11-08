@@ -1617,7 +1617,7 @@ fn diameter_after_marker(text: &str, marker: &str) -> Option<DiameterToken> {
 fn diameter_after_symbol(text: &str) -> Option<DiameterToken> {
     let mut cursor = 0;
     for character in text.chars() {
-        if matches!(character, 'ø' | '⌀' | 'Ø') {
+        if matches!(character, '\u{00f8}' | '\u{2300}' | '\u{00d8}') {
             let offset = cursor + character.len_utf8();
             let mut number_at = offset;
             while text

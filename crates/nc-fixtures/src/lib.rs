@@ -33,6 +33,33 @@ pub const REQUIRED_FILES: [&str; 3] = ["source.nc", "config.toml", "NOTES.md"];
 /// The optional reviewed golden report file name.
 pub const EXPECTED_FILE: &str = "expected.json";
 
+/// The synthetic fixtures that must each carry a reviewed `expected.json`.
+///
+/// The manifest is explicit so a missing folder or golden cannot quietly
+/// reduce the regression corpus. Add a name only together with its reviewed
+/// report.
+pub const SYNTHETIC_FIXTURES: [&str; 13] = [
+    "arc-smaller-than-tool",
+    "bare-file",
+    "clean-pocket",
+    "cutter-comp",
+    "drill-cycles",
+    "duplicate-holes",
+    "helical-bore",
+    "inch-program",
+    "manual-spindle",
+    "missing-feed",
+    "overlapping-holes",
+    "rapid-through-stock",
+    "unsupported-code",
+];
+
+/// Real fixtures deliberately exempt from the reviewed-golden requirement.
+///
+/// `box54-lid-50cm` is a large model-heavy program; it is locked by
+/// `tests/real_file.rs` for determinism, caps, and performance instead.
+pub const REAL_FIXTURES_WITHOUT_GOLDEN: [&str; 1] = ["box54-lid-50cm"];
+
 /// A loaded fixture. Source and config are kept as text so tests can hash and
 /// rerun the exact bytes that were reviewed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,10 +75,14 @@ pub struct Fixture {
 }
 
 impl Fixture {
-    /// Loads `source.nc`, `config.toml`, and the optional `expected.json`.
+    /// Loads `source.nc`, `config.toml`, the required `NOTES.md`, and the
+    /// optional `expected.json`.
     pub fn load(dir: &Path) -> Result<Self, FixtureError> {
         let source = read_text(&dir.join("source.nc"))?;
         let config_text = read_text(&dir.join("config.toml"))?;
+        // The notes are required even though they are not part of the report:
+        // they carry the review date, config overrides, and expected coverage.
+        let _notes = read_text(&dir.join("NOTES.md"))?;
         let expected_path = dir.join(EXPECTED_FILE);
         let expected_text = if expected_path.is_file() {
             Some(read_text(&expected_path)?)
@@ -338,4 +369,44 @@ fn truncate(text: &str) -> String {
 fn join_pointer(path: &str, segment: &str) -> String {
     let escaped = segment.replace('~', "~0").replace('/', "~1");
     format!("{path}/{escaped}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "nca-fixtures-{label}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn load_requires_notes_md() {
+        let dir = scratch_dir("notes");
+        std::fs::create_dir_all(&dir).expect("create fixture directory");
+        std::fs::write(dir.join("source.nc"), "G21\nM30\n").expect("write source");
+        std::fs::write(dir.join("config.toml"), "").expect("write config");
+
+        let error = Fixture::load(&dir).expect_err("NOTES.md must be required");
+        assert!(matches!(error, FixtureError::Read { .. }), "{error}");
+        assert!(error.to_string().contains("NOTES.md"), "{error}");
+
+        std::fs::write(dir.join("NOTES.md"), "# fixture\n").expect("write notes");
+        let fixture = Fixture::load(&dir).expect("fixture with notes loads");
+        assert!(fixture.expected_text.is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn synthetic_manifest_lists_each_fixture_once() {
+        let names: std::collections::BTreeSet<&str> = SYNTHETIC_FIXTURES.into_iter().collect();
+        assert_eq!(names.len(), SYNTHETIC_FIXTURES.len());
+    }
 }

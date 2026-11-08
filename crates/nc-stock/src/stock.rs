@@ -25,7 +25,10 @@ pub enum InferenceBasis {
     ZeroAtTop,
     /// Every cut stayed above Z0; the stock top is above the highest cut.
     AllCutsAboveZero,
-    /// There were no cutting moves; all path bounds were used instead.
+    /// There were no cutting moves; all motion extents were used instead.
+    ///
+    /// With no motion records at all, the `f32` display bounds are the
+    /// fallback.
     NoCuttingMoves,
 }
 
@@ -45,18 +48,20 @@ pub struct StockModel {
 }
 
 impl StockModel {
-    /// Infers stock from the program's cutting bounds.
+    /// Infers stock from the program's exact motion extents.
     ///
     /// Cutting bounds exclude safe-Z rapids, so a tall retract does not inflate
     /// the block. The XY margin is `max(2% of the larger cutting XY extent,
     /// 1 mm)`. If any cut is below Z0 the top is Z0; otherwise the top sits
     /// 2 mm above the highest cut and the block is 10 mm thick. With no cutting
-    /// moves, all path bounds are used and the basis is
+    /// moves, all motion extents are used and the basis is
     /// [`InferenceBasis::NoCuttingMoves`].
     ///
-    /// Arcs contribute their exact extents, not just their endpoints. An empty
-    /// program gets a small finite block around the origin rather than an
-    /// infinite one.
+    /// Arcs contribute their exact extents, not just their endpoints. When the
+    /// program has motion records, only their exact `f64` extents are used; the
+    /// display bounds are `f32` and are consulted only for a legacy program
+    /// with no motion records. An empty program gets a small finite block
+    /// around the origin rather than an infinite one.
     #[must_use]
     pub fn infer(program: &Program) -> Self {
         let mut cutting = Extents::empty();
@@ -67,11 +72,16 @@ impl StockModel {
                 expand_motion(&mut cutting, &motion);
             }
         }
-        if let Some(bounds) = Extents::from_viewer(program.bounds) {
-            all.union(bounds);
-        }
-        if let Some(bounds) = Extents::from_viewer(program.cutting_bounds()) {
-            cutting.union(bounds);
+        if program.motions.is_empty() {
+            // Legacy/display-only fallback. `Bounds3` stores `f32`, so this
+            // path is less precise; it must never override exact motion
+            // extents when those exist.
+            if let Some(bounds) = Extents::from_viewer(program.bounds) {
+                all.union(bounds);
+            }
+            if let Some(bounds) = Extents::from_viewer(program.cutting_bounds()) {
+                cutting.union(bounds);
+            }
         }
         if !cutting.is_empty() {
             let basis = if cutting.min[2] < 0.0 {
@@ -363,6 +373,71 @@ mod tests {
         // The half circle reaches y = -50; the display chord would not.
         assert!(stock.min_mm[1] <= -51.0);
         assert!(stock.max_mm[1] >= 51.0);
+        assert_eq!(stock.inference, Some(InferenceBasis::ZeroAtTop));
+    }
+
+    #[test]
+    fn arc_extents_are_exact_without_display_rounding() {
+        // Center and radius are deliberately not representable in `f32`. The
+        // exact extents are X 0.1..100.1 and Y -49.9..50.1, so a 2 mm margin
+        // gives Y -51.9..52.1. Unioning the f32 display bounds would move both
+        // limits by about 1.5e-6 mm.
+        let arc = nc_gcode::ArcRecord {
+            center_mm: [50.1, 0.1, -1.0],
+            radius_mm: 50.0,
+            end_radius_mm: 50.0,
+            start_angle_rad: 0.0,
+            sweep_rad: nc_core::math::TAU,
+            axial_delta_mm: 0.0,
+            format: nc_gcode::ArcFormat::Center,
+        };
+        let mut motion = MotionRecord::linear(
+            1,
+            0,
+            MoveKind::ArcCcw,
+            [100.1, 0.1, -1.0],
+            [100.1, 0.1, -1.0],
+        );
+        motion.arc = Some(Box::new(arc));
+        let program = ProgramBuilder::new().record(motion).build();
+        let stock = StockModel::infer(&program);
+
+        assert!(
+            (stock.min_mm[1] - (-51.9)).abs() < 1e-9,
+            "{:?}",
+            stock.min_mm
+        );
+        assert!((stock.max_mm[1] - 52.1).abs() < 1e-9, "{:?}", stock.max_mm);
+        assert_eq!(stock.inference, Some(InferenceBasis::ZeroAtTop));
+    }
+
+    #[test]
+    fn motion_extents_do_not_round_through_f32_display_bounds() {
+        // -10.0001 and 10.0001 are not representable in `f32`. With motion
+        // records present, inference must use the exact f64 endpoints only.
+        let program = ProgramBuilder::new()
+            .motion(
+                1,
+                MoveKind::Feed,
+                [-10.0001, 0.0, -1.0],
+                [0.0, 10.0001, -1.0],
+                Some(500.0),
+            )
+            .build();
+        let stock = StockModel::infer(&program);
+
+        assert!(
+            (stock.min_mm[0] - (-11.0001)).abs() < 1e-12,
+            "{:?}",
+            stock.min_mm
+        );
+        assert!(
+            (stock.max_mm[1] - 11.0001).abs() < 1e-12,
+            "{:?}",
+            stock.max_mm
+        );
+        assert_eq!(stock.min_mm[2], -3.0);
+        assert_eq!(stock.max_mm[2], 0.0);
         assert_eq!(stock.inference, Some(InferenceBasis::ZeroAtTop));
     }
 }

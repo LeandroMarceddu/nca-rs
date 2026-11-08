@@ -22,7 +22,7 @@ Recorded before any measurement, as required:
 | Parse + motion records + timeline, 1M lines | <= 5 s |
 | Peak memory | <= ~250 bytes per motion; 2M motions under ~1 GB |
 | Analysis M1, 1M lines | <= 10 s |
-| M2 engagement pass | slower is allowed; must be cancellable and show progress |
+| M2 engagement pass | target: cancellable with progress; current: stale-result cancellation only, no mid-run progress (D034) |
 | Camera orbit/pan/zoom, 1M segments at 1920x1080 | 60 fps via the plan cache |
 | Stock mesh update while playing | 15-30 Hz |
 | Heightmap grid | <= 4M cells by default |
@@ -68,14 +68,19 @@ Report: 477 retained diagnostics, `31/45` rules evaluated, per-rule caps active
 | Metric | Target | Measured | Verdict |
 |---|---|---|---|
 | Parse + records + timeline, 100k lines | <= 1 s | 0.51 s release, including analysis | pass |
-| Peak memory, 119k motions | <= ~250 B/motion | ~103 MiB total process | pass |
-| M1 analysis, 1M lines | <= 10 s | not measured (1M fixture pending) | pending |
+| Peak memory, 119k motions | <= ~250 B/motion | ~903 B/motion (~103 MiB total) | **miss; D030 accepted** |
+| M1 analysis, 1M lines | <= 10 s | 0.745 s for 34 M1 rules (M2 skipped) | pass |
 | MotionRecord size | <= 128 bytes | enforced by test | pass |
 | Camera 60 fps, 1M segments | 60 fps | not measured | pending |
 | Stock mesh update | 15-30 Hz | not measured | pending |
 
-A 1M-line synthetic fixture and release UI frame-time measurements are still
-required before the performance section is final.
+Release UI frame-time and stock-mesh update measurements are still required
+before the performance section is final. The 1M-line measurement is below.
+
+Known UI gap: entering SIMULATE builds the `Simulation` (timeline + initial
+heightmap) synchronously on the UI thread. For 1M-line files this is an
+unmeasured pause; moving it to a worker with a loading state is a v0.2
+follow-up (D035).
 
 ### One-million-line synthetic
 

@@ -7,7 +7,9 @@ use nc_analysis::{
     RuleSettings, Severity, StockConfig, StockRequirement, analyze, rules,
 };
 use nc_core::{Dialect, MachineConfig};
-use nc_gcode::{FeedMode, MotionRecord, MoveKind, Program, ProgramBuilder};
+use nc_gcode::{
+    ArcFormat, ArcRecord, FeedMode, MotionRecord, MoveKind, Plane, Program, ProgramBuilder,
+};
 
 /// Source text with `count` one-word lines so diagnostics can be clamped.
 fn source_lines(count: usize) -> String {
@@ -231,7 +233,9 @@ fn machine_envelope_flags_each_axis_outside_travel() {
 
     assert_eq!(report.coverage.evaluated, 1);
     assert!(report.coverage.skipped.is_empty());
-    assert_eq!(report.diagnostics.len(), 2);
+    // Every motion is checked over its exact extent: motion 2 leaves X high,
+    // motion 3 starts at that same X and also ends below the Y minimum.
+    assert_eq!(report.diagnostics.len(), 3);
 
     let x_finding = &report.diagnostics[0];
     assert_eq!(x_finding.rule.as_str(), "travel.machine_envelope");
@@ -255,6 +259,14 @@ fn machine_envelope_flags_each_axis_outside_travel() {
         Some(&nc_analysis::EvidenceValue::Float(30.0))
     );
     assert_eq!(
+        x_finding.evidence.get("extent_min_mm"),
+        Some(&nc_analysis::EvidenceValue::Float(0.0))
+    );
+    assert_eq!(
+        x_finding.evidence.get("extent_max_mm"),
+        Some(&nc_analysis::EvidenceValue::Float(40.0))
+    );
+    assert_eq!(
         x_finding.evidence.get("tool"),
         Some(&nc_analysis::EvidenceValue::Int(2))
     );
@@ -263,7 +275,22 @@ fn machine_envelope_flags_each_axis_outside_travel() {
         Some(&nc_analysis::EvidenceValue::Point3([40.0, 0.0, 0.0]))
     );
 
-    let y_finding = &report.diagnostics[1];
+    let second_x = &report.diagnostics[1];
+    assert_eq!(second_x.line, 3);
+    assert_eq!(
+        second_x.evidence.get("axis"),
+        Some(&nc_analysis::EvidenceValue::Text("X".to_string()))
+    );
+    assert_eq!(
+        second_x.evidence.get("extent_min_mm"),
+        Some(&nc_analysis::EvidenceValue::Float(20.0))
+    );
+    assert_eq!(
+        second_x.evidence.get("extent_max_mm"),
+        Some(&nc_analysis::EvidenceValue::Float(40.0))
+    );
+
+    let y_finding = &report.diagnostics[2];
     assert_eq!(y_finding.line, 3);
     assert_eq!(
         y_finding.evidence.get("axis"),
@@ -272,6 +299,65 @@ fn machine_envelope_flags_each_axis_outside_travel() {
     assert_eq!(
         y_finding.evidence.get("value_mm"),
         Some(&nc_analysis::EvidenceValue::Float(-20.0))
+    );
+}
+
+#[test]
+fn machine_envelope_flags_arc_sweep_beyond_travel() {
+    // A full circle centered near the Y travel limit. Its start and end are the
+    // same point at Y = 23, inside travel, but the sweep reaches Y = 33.
+    let mut arc_motion =
+        MotionRecord::linear(2, 0, MoveKind::ArcCcw, [0.0, 23.0, 0.0], [0.0, 23.0, 0.0]);
+    arc_motion.plane = Plane::Xy;
+    arc_motion.arc = Some(Box::new(ArcRecord {
+        center_mm: [0.0, 28.0, 0.0],
+        radius_mm: 5.0,
+        end_radius_mm: 5.0,
+        start_angle_rad: -nc_core::math::FRAC_PI_2,
+        sweep_rad: nc_core::math::TAU,
+        axial_delta_mm: 0.0,
+        format: ArcFormat::Center,
+    }));
+    let program = ProgramBuilder::new().record(arc_motion).build();
+    let config = AnalysisConfig {
+        machine: Some(machine_config()),
+        ..AnalysisConfig::default()
+    };
+    let report = run(
+        &program,
+        &source_lines(2),
+        &config,
+        &registry(rules::machine_envelope::rules()),
+    );
+
+    assert_eq!(report.coverage.evaluated, 1);
+    assert_eq!(
+        report.diagnostics.len(),
+        1,
+        "only the Y extent leaves travel"
+    );
+    let finding = &report.diagnostics[0];
+    assert_eq!(finding.rule.as_str(), "travel.machine_envelope");
+    assert_eq!(finding.line, 2);
+    assert_eq!(
+        finding.evidence.get("axis"),
+        Some(&nc_analysis::EvidenceValue::Text("Y".to_string()))
+    );
+    assert_eq!(
+        finding.evidence.get("value_mm"),
+        Some(&nc_analysis::EvidenceValue::Float(33.0))
+    );
+    assert_eq!(
+        finding.evidence.get("extent_min_mm"),
+        Some(&nc_analysis::EvidenceValue::Float(23.0))
+    );
+    assert_eq!(
+        finding.evidence.get("extent_max_mm"),
+        Some(&nc_analysis::EvidenceValue::Float(33.0))
+    );
+    assert_eq!(
+        finding.evidence.get("end_mm"),
+        Some(&nc_analysis::EvidenceValue::Point3([0.0, 23.0, 0.0]))
     );
 }
 

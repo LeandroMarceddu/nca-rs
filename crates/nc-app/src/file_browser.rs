@@ -135,7 +135,10 @@ pub struct ProgramFile {
     pub name: String,
     /// Absolute path.
     pub path: PathBuf,
-    /// Complete UTF-8 source text.
+    /// Complete UTF-8 source text, including a file-level BOM when present.
+    ///
+    /// Keeping the BOM makes the app hash and report the raw file bytes, which
+    /// matches the CLI. Display and parsing strip it where text is consumed.
     pub source: String,
 }
 
@@ -314,14 +317,16 @@ pub fn read_program(path: &Path) -> Result<ProgramFile, ProgramFileError> {
         return Err(ProgramFileError::Binary);
     }
     let text = String::from_utf8(bytes).map_err(|_| ProgramFileError::NotUtf8)?;
-    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-    if text.trim().is_empty() {
+    // A BOM-only file is empty even though the BOM is not whitespace. Keep the
+    // BOM in `source` so hashing covers the raw bytes the CLI also hashes.
+    let content = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    if content.trim().is_empty() {
         return Err(ProgramFileError::Empty);
     }
     Ok(ProgramFile {
         name,
         path: absolute,
-        source: text.to_string(),
+        source: text,
     })
 }
 
@@ -729,7 +734,11 @@ mod tests {
         let loaded = read_program(&good).expect("read");
         assert_eq!(loaded.name, "good.nc");
         assert!(loaded.path.is_absolute());
-        assert!(loaded.source.starts_with("G21"));
+        assert_eq!(loaded.source, "\u{feff}G21 G90\nG0 X1\n");
+
+        let bom_only = dir.join("bom-only.nc");
+        fs::write(&bom_only, "\u{feff}").expect("write");
+        assert_eq!(read_program(&bom_only), Err(ProgramFileError::Empty));
 
         let _ = fs::remove_dir_all(&dir);
     }

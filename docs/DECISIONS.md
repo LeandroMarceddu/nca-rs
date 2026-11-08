@@ -305,3 +305,46 @@ consequence for the contract.
   and would duplicate the docs/RULES.md catalog.
 - **Consequence:** Users can override documented keys, but the sheet cannot
   enumerate every possible key. Revisit when rule metadata is centralized.
+
+## D033 - v0.1 fixture scope
+
+- **Decision:** The 13 synthetic fixtures with reviewed `expected.json` are the
+  v0.1 golden set. Dedicated fixtures for `arc-radius-mismatch`, `tool-change`,
+  `inferred-stock`, `explicit-stock`, `thin-wall`, `rest-material`, and a
+  second manual-spindle configuration are post-v0.1 follow-ups.
+- **Reason:** The core coverage exists; the missing folders are additional
+  regression cases, not unexercised code paths. Several rules are covered by
+  unit tests and by `clean-pocket`, `rapid-through-stock`, and `missing-feed`.
+- **Consequence:** `docs/FIXTURES.md` marks the list as the target corpus and
+  the committed set as the v0.1 subset. Do not claim the full corpus exists.
+
+## D034 - v0.1 worker cancellation is stale-result only
+
+- **Decision:** Analysis and long seeks run on workers with a generation gate;
+  a stale result is discarded. There is no mid-run cancel token or progress
+  callback in v0.1.
+- **Reason:** Adding a cancellation API to `analyze` and `Simulation::seek_to_time`
+  changes the frozen interfaces and needs careful testing across long M2 rules.
+- **Consequence:** The UI stays responsive, but a long rule/seek already running
+  finishes its work. Architecture, simulation, and performance docs state this
+  limitation instead of claiming cancellable progress.
+
+## D035 - Entering SIMULATE builds the session synchronously
+
+- **Decision:** v0.1 constructs `Simulation::new` on the UI thread when the user
+  switches to SIMULATE. No loading state or worker handoff is implemented.
+- **Reason:** The initial build is fast on the measured fixtures; moving it to a
+  worker needs a new app state machine and cancellation semantics.
+- **Consequence:** A 1M-line file can pause the UI on the first mode switch.
+  This is a known v0.2 follow-up; the camera/mesh frame targets remain pending.
+
+## D036 - v0.1 review fixes
+
+- **Decision:** The app uses `parse_program_lossy` and keeps partial geometry;
+  travel rules use exact arc extents; CLI and Markdown headlines count distinct
+  skipped rules; the app hashes raw file bytes including a BOM; unknown TOML
+  rule ids are errors; stock inference uses exact motion extents when motions
+  exist; golden coverage is enforced by an explicit 13-name list.
+- **Reason:** These were the independent v0.1 review blockers/should-fix items.
+- **Consequence:** Unsupported files are viewable and analyzed, arc overtravel
+  is caught, coverage arithmetic is honest, and a typo cannot disable a rule.

@@ -52,6 +52,7 @@ project knowledge store is lost.
 | 2026-11-08 | diagnostics/coverage UI: clippy + `cargo test -p nc-app` | pass, 77 tests; 2 captures |
 | 2026-11-08 | real box54: release check, 3 runs | median 0.509 s, ~103 MiB RSS, 477 findings, 31/45 |
 | 2026-11-08 | setup/config/export: clippy + `cargo test -p nc-app` | pass, 90 tests; 4 captures refreshed |
+| 2026-11-08 | v0.1 review fixes: workspace fmt/clippy/test/doc | pass; docs-vs-registry test added |
 | 2026-11-08 | 1M-line synthetic: release check | 0.745 s, ~420 MiB RSS; memory target miss recorded (D030) |
 | 2026-11-08 | parser corrections: clippy + `cargo test -p nc-gcode -p nc-stock -p nc-sim` | pass; real file 119,393 records, 0 errors, 336 ms |
 
@@ -93,6 +94,9 @@ project knowledge store is lost.
 - **Setup, config, export** — TOML load, full setup sheet, SHA-keyed tool
   persistence, JSON/Markdown export, 90 app tests, setup/export captures
   (2026-11-08).
+- **v0.1 review fixes** — lossy app parse, exact arc extents, coverage
+  headlines, raw-byte BOM hash, unknown rule ids, exact stock extents, enforced
+  golden set, fixture notes (2026-11-08).
 - **Full workspace gate** — fmt, clippy `-D warnings`, tests, and docs clean
   (2026-11-08).
 

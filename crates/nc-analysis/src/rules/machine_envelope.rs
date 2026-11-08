@@ -1,9 +1,10 @@
-//! `travel.machine_envelope`: a motion target leaves the configured travel box.
+//! `travel.machine_envelope`: a motion extent leaves the configured travel box.
 
 use std::collections::BTreeMap;
 
 use nc_gcode::MotionRecord;
 
+use super::extents::motion_extents;
 use crate::config::RuleSettings;
 use crate::report::Diagnostic;
 use crate::rule::{AnalysisModel, Requirements, Rule, RuleOutcome};
@@ -21,7 +22,7 @@ pub fn rules() -> Vec<Box<dyn Rule>> {
     vec![Box::new(MachineEnvelope)]
 }
 
-/// Checks every motion endpoint against the configured travel box.
+/// Checks every motion's exact swept extent against the configured travel box.
 struct MachineEnvelope;
 
 impl Rule for MachineEnvelope {
@@ -60,14 +61,26 @@ impl Rule for MachineEnvelope {
 
         let mut findings = Vec::new();
         for motion in &model.program.motions {
+            let Some((extent_min, extent_max)) = motion_extents(motion) else {
+                continue;
+            };
             for axis in 0..AXES.len() {
-                let value = motion.end_mm[axis];
                 let min = machine.travel_min_mm[axis];
                 let max = machine.travel_max_mm[axis];
-                if value.is_finite() && value >= min && value <= max {
+                let extent_min = extent_min[axis];
+                let extent_max = extent_max[axis];
+                let below = extent_min < min;
+                let above = extent_max > max;
+                if !below && !above {
                     continue;
                 }
-                findings.push(finding(motion, axis, value, min, max));
+                // One finding per violating axis. When the extent crosses both
+                // limits, the lower bound is the reported value; the message
+                // and the extent evidence name both bounds.
+                let value = if below { extent_min } else { extent_max };
+                findings.push(finding(
+                    motion, axis, value, extent_min, extent_max, min, max,
+                ));
             }
         }
         RuleOutcome::Findings(findings)
@@ -81,7 +94,15 @@ impl Rule for MachineEnvelope {
 }
 
 /// Builds one finding for one axis violation.
-fn finding(motion: &MotionRecord, axis: usize, value: f64, min: f64, max: f64) -> Diagnostic {
+fn finding(
+    motion: &MotionRecord,
+    axis: usize,
+    value: f64,
+    extent_min: f64,
+    extent_max: f64,
+    min: f64,
+    max: f64,
+) -> Diagnostic {
     let axis_label = AXES.get(axis).copied().unwrap_or("?");
     let mut evidence = BTreeMap::new();
     evidence.insert(
@@ -91,6 +112,14 @@ fn finding(motion: &MotionRecord, axis: usize, value: f64, min: f64, max: f64) -
     evidence.insert("value_mm".to_string(), EvidenceValue::Float(value));
     evidence.insert("min_mm".to_string(), EvidenceValue::Float(min));
     evidence.insert("max_mm".to_string(), EvidenceValue::Float(max));
+    evidence.insert(
+        "extent_min_mm".to_string(),
+        EvidenceValue::Float(extent_min),
+    );
+    evidence.insert(
+        "extent_max_mm".to_string(),
+        EvidenceValue::Float(extent_max),
+    );
     evidence.insert(
         "tool".to_string(),
         EvidenceValue::Int(i64::from(motion.tool)),
@@ -105,7 +134,8 @@ fn finding(motion: &MotionRecord, axis: usize, value: f64, min: f64, max: f64) -
         column: 0,
         line_end: motion.line,
         message: format!(
-            "{axis_label} endpoint {value:.3} mm is outside machine travel [{min:.3}, {max:.3}] mm"
+            "{axis_label} extent [{extent_min:.3}, {extent_max:.3}] mm is outside machine travel \
+             [{min:.3}, {max:.3}] mm"
         ),
         evidence,
     }

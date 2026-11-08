@@ -5,6 +5,7 @@
 //! aggregate used by tests and direct callers.
 
 pub mod clearance;
+mod extents;
 pub mod feed_missing;
 pub mod geometry;
 pub mod machine_envelope;

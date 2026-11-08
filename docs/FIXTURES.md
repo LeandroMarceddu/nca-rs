@@ -23,6 +23,20 @@ fixtures/synthetic/<name>/
 - Synthetic fixtures are deterministic and self-contained. They must not depend
   on a machine, a controller, or a clock.
 
+## v0.1 committed subset
+
+The committed synthetic corpus is the 13 folders with reviewed `expected.json`:
+`arc-smaller-than-tool`, `bare-file`, `clean-pocket`, `cutter-comp`,
+`drill-cycles`, `duplicate-holes`, `helical-bore`, `inch-program`,
+`manual-spindle`, `missing-feed`, `overlapping-holes`, `rapid-through-stock`,
+`unsupported-code`.
+
+The table below is the target corpus, not a claim that every folder exists.
+D033 records the post-v0.1 additions: `arc-radius-mismatch`, `tool-change`,
+`inferred-stock`, `explicit-stock`, `thin-wall`, `rest-material`, and a second
+manual-spindle configuration. Rules without a dedicated folder are covered by
+unit tests and by the committed fixtures.
+
 ## Required synthetic coverage
 
 | Fixture | Proves |

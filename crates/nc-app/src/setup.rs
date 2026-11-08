@@ -840,9 +840,9 @@ pub fn markdown(report: &Report) -> String {
     );
     let _ = writeln!(
         out,
-        "| coverage | {} evaluated, {} skipped (of {} registered) |",
+        "| coverage | {} evaluated, {} skipped rules (of {} registered) |",
         report.coverage.evaluated,
-        report.coverage.skipped_count(),
+        report.coverage.skipped_rule_count(),
         report.coverage.total
     );
 
@@ -912,16 +912,18 @@ pub fn markdown(report: &Report) -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "{} evaluated, {} skipped ({} distinct rules skipped, {} registered).",
+        "{} evaluated, {} skipped rules ({} skip entries, {} registered).",
         report.coverage.evaluated,
-        report.coverage.skipped_count(),
         report.coverage.skipped_rule_count(),
+        report.coverage.skipped_count(),
         report.coverage.total
     );
     if report.coverage.skipped.is_empty() {
         let _ = writeln!(out);
         let _ = writeln!(out, "Every registered rule was evaluated.");
     } else {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "Skip entries:");
         let _ = writeln!(out);
         for skip in &report.coverage.skipped {
             let _ = writeln!(
@@ -1543,7 +1545,7 @@ G1 X30
             ],
             truncated: BTreeMap::from([("process.chipload".to_string(), 3)]),
             coverage: Coverage {
-                evaluated: 31,
+                evaluated: 43,
                 total: 45,
                 skipped: vec![
                     SkippedRule::new(
@@ -1555,6 +1557,11 @@ G1 X30
                         RuleId::new("travel.stock_bounds"),
                         "stock.explicit",
                         "explicit stock is required",
+                    ),
+                    SkippedRule::new(
+                        RuleId::new("process.chipload"),
+                        "tool.flutes:T3",
+                        "tool T3 has no flute count",
                     ),
                 ],
             },
@@ -1588,9 +1595,15 @@ G1 X30
             assert!(text.contains(skip.missing_input.as_str()));
             assert!(text.contains(skip.reason.as_str()));
         }
-        assert!(text.contains("31 evaluated"));
-        assert!(text.contains("2 skipped"));
+        assert!(text.contains("43 evaluated"));
+        assert!(text.contains("2 skipped rules"));
+        assert!(text.contains("3 skip entries"));
         assert!(text.contains("45 registered"));
+        assert!(text.contains("Skip entries:"));
+        assert_eq!(
+            report.coverage.evaluated + report.coverage.skipped_rule_count(),
+            report.coverage.total
+        );
         assert!(text.contains("Advisory only"));
         assert!(text.contains("T1"));
         assert!(text.contains("comment:L4"));
@@ -1634,10 +1647,18 @@ G1 X30
             &RuleRegistry::from_rules(nc_analysis::rules::all()),
         );
         assert!(!report.coverage.skipped.is_empty());
+        assert_eq!(
+            report.coverage.evaluated + report.coverage.skipped_rule_count(),
+            report.coverage.total
+        );
         let text = export_text(&report, ExportFormat::Markdown);
         for skip in &report.coverage.skipped {
             assert!(text.contains(skip.missing_input.as_str()));
         }
+        assert!(text.contains(&format!(
+            "{} skipped rules",
+            report.coverage.skipped_rule_count()
+        )));
         assert!(!text.contains('%'));
         assert!(!text.contains("SAFE"));
     }

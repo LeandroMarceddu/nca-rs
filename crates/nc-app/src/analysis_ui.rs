@@ -370,7 +370,7 @@ pub fn coverage_groups(coverage: &Coverage) -> Vec<CoverageGroup> {
         .collect()
 }
 
-/// Plain `N evaluated · M skipped` text. Never a percentage.
+/// Plain `N evaluated / M skipped` text. Never a percentage.
 ///
 /// `M` is the number of distinct rules that did not run, so
 /// `evaluated + skipped == total`. The number of individual skip records

@@ -108,6 +108,7 @@ pub fn split_source_lines(source: &str) -> Vec<&str> {
 /// The parser supplies the authoritative value. This fallback keeps the
 /// program list useful when the file did not parse and `Program` is absent.
 fn n_word_from_text(text: &str) -> Option<u32> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let trimmed = text.trim_start();
     let bytes = trimmed.as_bytes();
     if bytes.len() < 2 || !bytes[0].eq_ignore_ascii_case(&b'n') {
@@ -131,14 +132,21 @@ pub fn build_source_lines(source: &str, program: Option<&Program>) -> Arc<[Sourc
     let mut out = Vec::with_capacity(lines.len());
     for (index, text) in lines.into_iter().enumerate() {
         let number = index.saturating_add(1);
+        // The file-level BOM belongs to the raw bytes the report hashes, not
+        // to the first display line.
+        let display = if index == 0 {
+            text.strip_prefix('\u{feff}').unwrap_or(text)
+        } else {
+            text
+        };
         let n_word = program
             .and_then(|program| program.lines.get(index))
             .and_then(|line| line.number)
-            .or_else(|| n_word_from_text(text));
+            .or_else(|| n_word_from_text(display));
         out.push(SourceLine {
             number,
             n_word,
-            text: text.to_string(),
+            text: display.to_string(),
         });
     }
     Arc::from(out)

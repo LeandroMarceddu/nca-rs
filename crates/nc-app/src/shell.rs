@@ -548,9 +548,11 @@ impl NcaShell {
             .loaded
             .as_ref()
             .ok_or_else(|| "No program is open.".to_string())?;
-        let program = loaded.program.as_ref().cloned().ok_or_else(|| {
-            "The file has parse errors, so there is no geometry to simulate.".to_string()
-        })?;
+        let program = loaded
+            .program
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "No parsed program is available to simulate.".to_string())?;
         let inferred = loaded.stock;
         let stock = self
             .state
@@ -701,8 +703,7 @@ impl NcaShell {
         let Some(program) = loaded.program.as_ref().cloned() else {
             self.analysis = AnalysisState::Failed {
                 generation,
-                message: "The file has parse errors, so no program reached the analysis engine."
-                    .to_string(),
+                message: "No parsed program is available for analysis.".to_string(),
             };
             cx.notify();
             return;
@@ -4256,7 +4257,9 @@ impl NcaShell {
         let visibility = self.state.visibility();
         let mode = self.viewer.mode();
         let zoom = self.viewer.zoom_percent();
-        let parse_errors = loaded.is_some_and(|loaded| !loaded.errors.is_empty());
+        let geometry_uncertain = loaded.is_some_and(LoadedProgram::geometry_is_uncertain);
+        let skipped_blocks = loaded
+            .is_some_and(|loaded| !loaded.errors.is_empty() || !loaded.skipped_blocks.is_empty());
         let preview = loaded.is_none();
         let overlay = self.viewer_overlay();
 
@@ -4321,11 +4324,38 @@ impl NcaShell {
                 )
                 .child(chip(&format!("L{}", sim.snapshot.current_line), p));
         }
-        if parse_errors {
+        if geometry_uncertain {
+            let line = loaded
+                .and_then(|loaded| loaded.geometry_uncertain_after)
+                .map_or("an unsupported block".to_string(), |line| {
+                    format!("line {line}")
+                });
             top_left = top_left.child(
-                chip("GEOMETRY UNAVAILABLE", p)
+                chip("PARTIAL GEOMETRY", p)
+                    .id("canvas-partial-geometry")
                     .text_color(p.danger)
-                    .border_color(p.danger),
+                    .border_color(p.danger)
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(format!(
+                            "New geometry after {line} is not trusted; the canvas, \
+                             simulation, and analysis use the trusted prefix."
+                        ))
+                        .build(window, cx)
+                    }),
+            );
+        } else if skipped_blocks {
+            top_left = top_left.child(
+                chip("UNSUPPORTED BLOCK", p)
+                    .id("canvas-unsupported-block")
+                    .text_color(p.danger)
+                    .border_color(p.danger)
+                    .tooltip(|window, cx| {
+                        Tooltip::new(
+                            "At least one block was skipped; the canvas, simulation, and \
+                             analysis use every block that did parse.",
+                        )
+                        .build(window, cx)
+                    }),
             );
         }
         card = card.child(top_left);

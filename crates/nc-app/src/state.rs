@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::collections::BTreeMap;
 
 use nc_core::{Dialect, ToolTable};
-use nc_gcode::{ParseError, ParserConfig, Program, parse_program_with};
+use nc_gcode::{ParseError, ParserConfig, Program, SkippedBlock, parse_program_lossy};
 use nc_stock::{InferenceBasis, StockModel, StockSource};
 use nc_viewer::MoveKind;
 use serde::{Deserialize, Serialize};
@@ -98,11 +98,15 @@ pub struct LoadedProgram {
     pub hash: String,
     /// Display lines with line and `N` numbers.
     pub lines: Arc<[SourceLine]>,
-    /// Parsed program, when the parser accepted the file.
+    /// Parsed program, possibly partial after lossy parsing.
     pub program: Option<Arc<Program>>,
-    /// Parse errors, empty on success.
+    /// Parse errors, empty when every block parsed.
     pub errors: Vec<ParseError>,
-    /// Inferred stock for a successful parse.
+    /// Blocks the lossy parser skipped, in source order.
+    pub skipped_blocks: Vec<SkippedBlock>,
+    /// First line after which new geometry is not trusted.
+    pub geometry_uncertain_after: Option<usize>,
+    /// Inferred stock for the trusted geometry, when a program exists.
     pub stock: Option<StockModel>,
     /// Whether this is the built-in demo.
     pub demo: bool,
@@ -115,13 +119,17 @@ impl LoadedProgram {
         Self::from_source_with_dialect(file.name, Some(file.path), file.source, false, dialect)
     }
 
-    /// Parses source text with Generic semantics and infers stock.
+    /// Parses source text lossily with Generic semantics and infers stock.
     #[must_use]
     pub fn from_source(name: String, path: Option<PathBuf>, source: String, demo: bool) -> Self {
         Self::from_source_with_dialect(name, path, source, demo, Dialect::Generic)
     }
 
-    /// Parses source text with an explicit dialect and infers stock.
+    /// Parses source text lossily with an explicit dialect and infers stock.
+    ///
+    /// A skipped block never discards the rest of the file: the partial
+    /// [`Program`] keeps the trusted prefix, and the errors, skipped blocks,
+    /// and geometry-uncertainty line are retained for the UI and analysis.
     #[must_use]
     pub fn from_source_with_dialect(
         name: String,
@@ -130,40 +138,43 @@ impl LoadedProgram {
         demo: bool,
         dialect: Dialect,
     ) -> Self {
+        // Hash the bytes exactly as loaded. A file-level UTF-8 BOM stays in
+        // `source` so the app and CLI report the same SHA-256 for the same
+        // file; the parser strips it from each line for text and line mapping.
         let hash = sha256_hex(source.as_bytes());
         let source: Arc<str> = Arc::from(source);
         let parser_config = ParserConfig::default().with_dialect(dialect);
-        match parse_program_with(&source, &parser_config) {
-            Ok(program) => {
-                let stock = StockModel::infer(&program);
-                let lines = build_source_lines(&source, Some(&program));
-                Self {
-                    name,
-                    path,
-                    source,
-                    hash,
-                    lines,
-                    program: Some(Arc::new(program)),
-                    errors: Vec::new(),
-                    stock: Some(stock),
-                    demo,
-                }
-            }
-            Err(errors) => {
-                let lines = build_source_lines(&source, None);
-                Self {
-                    name,
-                    path,
-                    source,
-                    hash,
-                    lines,
-                    program: None,
-                    errors,
-                    stock: None,
-                    demo,
-                }
-            }
+        let lossy = parse_program_lossy(&source, &parser_config);
+        let stock = StockModel::infer(&lossy.program);
+        let lines = build_source_lines(&source, Some(&lossy.program));
+        let geometry_uncertain_after = lossy.program.geometry_uncertain_after();
+        Self {
+            name,
+            path,
+            source,
+            hash,
+            lines,
+            program: Some(Arc::new(lossy.program)),
+            errors: lossy.errors,
+            skipped_blocks: lossy.skipped_blocks,
+            geometry_uncertain_after,
+            stock: Some(stock),
+            demo,
         }
+    }
+
+    /// Whether any block was skipped or geometry stopped being trusted.
+    #[must_use]
+    pub fn is_partial(&self) -> bool {
+        !self.errors.is_empty()
+            || !self.skipped_blocks.is_empty()
+            || self.geometry_uncertain_after.is_some()
+    }
+
+    /// Whether new geometry after some line is not trusted.
+    #[must_use]
+    pub fn geometry_is_uncertain(&self) -> bool {
+        self.geometry_uncertain_after.is_some()
     }
 
     /// The deterministic built-in demo.
@@ -746,20 +757,167 @@ mod tests {
     }
 
     #[test]
-    fn parse_errors_keep_the_source_list() {
-        let loaded = LoadedProgram::from_source(
-            "bad.nc".to_string(),
-            None,
-            "G21 G90\nG1 X\n".to_string(),
-            false,
-        );
-        assert!(loaded.program.is_none());
-        assert_eq!(loaded.line_count(), 2);
+    fn parse_errors_keep_the_partial_program_and_source_list() {
+        let source = "G21 G90\nG1 X\nG1 X10 F100\nG1 Y10\n";
+        let loaded =
+            LoadedProgram::from_source("bad.nc".to_string(), None, source.to_string(), false);
+        let program = loaded.program.as_ref().expect("partial program");
+        assert_eq!(loaded.line_count(), 4);
         assert!(!loaded.errors.is_empty());
+        assert!(!loaded.skipped_blocks.is_empty());
+        assert_eq!(loaded.skipped_blocks[0].line, 2);
+        assert_eq!(loaded.skipped_blocks[0].source, "G1 X");
+        assert_eq!(loaded.geometry_uncertain_after, None);
+        assert_eq!(
+            loaded.geometry_uncertain_after,
+            program.geometry_uncertain_after()
+        );
+        assert!(!program.motions.is_empty(), "trusted prefix must be kept");
         assert!(matches!(loaded.parse_state(), ParseState::ParseErrors(_)));
-        assert_eq!(loaded.stock_label(), "STOCK: NONE");
+        assert_eq!(loaded.stock_label(), "STOCK: INFERRED");
         let index = loaded.index("");
         assert!(index.has_error(2));
+    }
+
+    #[test]
+    fn unsupported_code_fixture_loads_partial_and_analyzes() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/synthetic/unsupported-code/source.nc");
+        let file = crate::file_browser::read_program(&fixture).expect("fixture reads");
+        let loaded = LoadedProgram::from_file(file, Dialect::Generic);
+        let program = loaded.program.as_ref().expect("partial program");
+        assert!(!program.motions.is_empty(), "the prefix before M98 is kept");
+        assert_eq!(loaded.geometry_uncertain_after, Some(9));
+        assert_eq!(program.geometry_uncertain_after(), Some(9));
+        assert!(
+            loaded
+                .skipped_blocks
+                .iter()
+                .any(|block| block.line == 9 && block.reason == "unsupported_code")
+        );
+
+        let stock = loaded.stock.expect("inferred stock");
+        let simulation = nc_sim::Simulation::new(
+            program,
+            stock,
+            &ToolTable::default(),
+            &nc_sim::SimConfig::default(),
+        );
+        assert!(
+            simulation.is_ok(),
+            "the trusted prefix must simulate: {:?}",
+            simulation.err()
+        );
+
+        let config = nc_analysis::AnalysisConfig::default();
+        let request = nc_analysis::AnalysisRequest::new(
+            &loaded.name,
+            &loaded.source,
+            &config,
+            Dialect::Generic,
+        )
+        .with_dialect_assumed(true);
+        let report = nc_analysis::analyze(
+            program,
+            &request,
+            &nc_analysis::RuleRegistry::from_rules(nc_analysis::rules::all()),
+        );
+        assert_eq!(report.input.geometry_uncertain_after, Some(9));
+        let unsupported = report
+            .diagnostics
+            .iter()
+            .find(|finding| finding.rule.as_str() == "parse.unsupported")
+            .expect("parse.unsupported finding");
+        assert_eq!(unsupported.line, 9);
+        assert!(
+            unsupported
+                .evidence
+                .get("raw")
+                .is_some_and(|value| value.display_text() == "M98 P1000")
+        );
+    }
+
+    #[test]
+    fn macro_only_file_loads_partial_and_analyzes() {
+        let loaded = LoadedProgram::from_source(
+            "macro.nc".to_string(),
+            None,
+            "M98 P1000\n".to_string(),
+            false,
+        );
+        let program = loaded.program.as_ref().expect("partial program");
+        assert!(program.motions.is_empty(), "M98 emits no geometry");
+        assert_eq!(loaded.geometry_uncertain_after, Some(1));
+        assert!(loaded.geometry_is_uncertain());
+        assert!(loaded.is_partial());
+        assert_eq!(loaded.skipped_blocks.len(), 1);
+        assert_eq!(loaded.skipped_blocks[0].line, 1);
+        assert!(!loaded.errors.is_empty());
+        assert!(matches!(loaded.parse_state(), ParseState::ParseErrors(_)));
+
+        let config = nc_analysis::AnalysisConfig::default();
+        let request = nc_analysis::AnalysisRequest::new(
+            &loaded.name,
+            &loaded.source,
+            &config,
+            Dialect::Generic,
+        )
+        .with_dialect_assumed(true);
+        let report = nc_analysis::analyze(
+            program,
+            &request,
+            &nc_analysis::RuleRegistry::from_rules(nc_analysis::rules::all()),
+        );
+        assert_eq!(report.input.geometry_uncertain_after, Some(1));
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|finding| finding.rule.as_str() == "parse.unsupported" && finding.line == 1)
+        );
+    }
+
+    #[test]
+    fn bom_file_hash_is_raw_bytes_and_matches_the_report() {
+        let path = scratch_path("bom").with_extension("nc");
+        let text = "G21 G90\nG0 X0 Y0\nG1 X10 F100\n";
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(text.as_bytes());
+        fs::write(&path, &bytes).expect("write bom file");
+
+        let file = crate::file_browser::read_program(&path).expect("read bom file");
+        assert!(
+            file.source.starts_with('\u{feff}'),
+            "the BOM is kept in source"
+        );
+        let loaded = LoadedProgram::from_file(file, Dialect::Generic);
+        let program = loaded.program.as_ref().expect("program");
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+        assert_eq!(loaded.lines[0].text, "G21 G90");
+        assert_eq!(loaded.hash, sha256_hex(&bytes));
+        assert_ne!(
+            loaded.hash,
+            sha256_hex(text.as_bytes()),
+            "the BOM must be part of the hashed bytes"
+        );
+
+        let config = nc_analysis::AnalysisConfig::default();
+        let request = nc_analysis::AnalysisRequest::new(
+            &loaded.name,
+            &loaded.source,
+            &config,
+            Dialect::Generic,
+        )
+        .with_dialect_assumed(true);
+        let report = nc_analysis::analyze(
+            program,
+            &request,
+            &nc_analysis::RuleRegistry::from_rules(nc_analysis::rules::all()),
+        );
+        assert_eq!(report.input.sha256, loaded.hash);
+        assert_eq!(report.input.sha256, sha256_hex(&bytes));
+        assert_eq!(report.input.line_count, 3);
+        let _ = fs::remove_file(path);
     }
 
     #[test]

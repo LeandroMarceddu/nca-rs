@@ -33,6 +33,29 @@ fn text(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// First whitespace-delimited value on the `key:` line of a simulate summary.
+fn field_text<'a>(stdout: &'a str, key: &str) -> &'a str {
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix(key))
+        .unwrap_or_else(|| panic!("missing {key:?} in:\n{stdout}"))
+        .split_whitespace()
+        .next()
+        .unwrap_or_else(|| panic!("missing value after {key:?} in:\n{stdout}"))
+}
+
+fn usize_field(stdout: &str, key: &str) -> usize {
+    field_text(stdout, key)
+        .parse()
+        .unwrap_or_else(|_| panic!("{key:?} is not an integer in:\n{stdout}"))
+}
+
+fn f64_field(stdout: &str, key: &str) -> f64 {
+    field_text(stdout, key)
+        .parse()
+        .unwrap_or_else(|_| panic!("{key:?} is not a number in:\n{stdout}"))
+}
+
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
@@ -126,6 +149,64 @@ fn human_formats_carry_counts_and_every_diagnostic() {
         "{stdout}"
     );
     assert!(stdout.contains("## Coverage"), "{stdout}");
+}
+
+#[test]
+fn coverage_headline_counts_distinct_skipped_rules() {
+    let json = run_check("bare-file", &[]);
+    assert_eq!(json.status.code(), Some(1), "{}", stderr(&json));
+    let value: Value = serde_json::from_str(&text(&json)).expect("valid JSON");
+    let coverage = &value["coverage"];
+    let evaluated = coverage["evaluated"].as_u64().expect("evaluated");
+    let total = coverage["total"].as_u64().expect("total");
+    let skipped = coverage["skipped"].as_array().expect("skipped");
+    let distinct: BTreeSet<&str> = skipped
+        .iter()
+        .filter_map(|skip| skip["rule"].as_str())
+        .collect();
+
+    assert_eq!(
+        evaluated + distinct.len() as u64,
+        total,
+        "evaluated + distinct skipped rules must equal total"
+    );
+    assert!(
+        skipped.len() > distinct.len(),
+        "bare-file must exercise a rule with several missing inputs:\n{}",
+        text(&json)
+    );
+
+    let headline = format!(
+        "{evaluated}/{total} evaluated, {} skipped ({} entries)",
+        distinct.len(),
+        skipped.len()
+    );
+
+    let text_output = run_check("bare-file", &["--format", "text"]);
+    assert_eq!(
+        text_output.status.code(),
+        Some(1),
+        "{}",
+        stderr(&text_output)
+    );
+    let text_stdout = text(&text_output);
+    assert!(
+        text_stdout.contains(&format!("coverage: {headline}")),
+        "text headline must use the distinct rule count:\n{text_stdout}"
+    );
+
+    let markdown_output = run_check("bare-file", &["--format", "markdown"]);
+    assert_eq!(
+        markdown_output.status.code(),
+        Some(1),
+        "{}",
+        stderr(&markdown_output)
+    );
+    let markdown_stdout = text(&markdown_output);
+    assert!(
+        markdown_stdout.contains(&format!("| coverage | {headline} |")),
+        "markdown headline must use the distinct rule count:\n{markdown_stdout}"
+    );
 }
 
 #[test]
@@ -262,6 +343,79 @@ fn simulate_writes_a_deterministic_heightmap() {
     fs::remove_file(&second).ok();
     assert_eq!(bytes_a, bytes_b, "heightmap PNG must be deterministic");
     assert_eq!(&bytes_a[..8], b"\x89PNG\r\n\x1a\n");
+}
+
+#[test]
+fn simulate_defaults_to_the_end_of_the_program() {
+    let dir = fixture("clean-pocket");
+    let source = dir.join("source.nc");
+    let config = dir.join("config.toml");
+    let line_count = fs::read_to_string(&source)
+        .expect("read source")
+        .lines()
+        .count();
+
+    let start_png = temp_path("sim-default-start.png");
+    let end_png = temp_path("sim-default-end.png");
+    let full_png = temp_path("sim-default-full.png");
+
+    let run = |to_line: Option<usize>, png: &Path| {
+        let mut args = vec![
+            "simulate".to_string(),
+            source.display().to_string(),
+            "--config".to_string(),
+            config.display().to_string(),
+            "--out-heightmap".to_string(),
+            png.display().to_string(),
+        ];
+        if let Some(line) = to_line {
+            args.push("--to-line".to_string());
+            args.push(line.to_string());
+        }
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        nca(&refs)
+    };
+
+    // The first indexed event is before the first cut, so this is tick 0.
+    let start = run(Some(1), &start_png);
+    assert_eq!(start.status.code(), Some(0), "{}", stderr(&start));
+    let start_stdout = text(&start);
+    assert_eq!(usize_field(&start_stdout, "tick:"), 0, "{start_stdout}");
+
+    let end = run(None, &end_png);
+    assert_eq!(end.status.code(), Some(0), "{}", stderr(&end));
+    let end_stdout = text(&end);
+    let end_tick = usize_field(&end_stdout, "tick:");
+    let end_time = f64_field(&end_stdout, "time:");
+    assert!(
+        end_tick > 0,
+        "default simulation stayed at tick 0:\n{end_stdout}"
+    );
+    assert!(end_time > 0.0, "{end_stdout}");
+    assert!(
+        end_stdout.contains("max depth: 1.000 mm"),
+        "default heightmap must contain the cut:\n{end_stdout}"
+    );
+
+    // The last source line has no indexed motion, so it uses the same
+    // end-of-program path. The default run must land on the same final tick.
+    let full = run(Some(line_count), &full_png);
+    assert_eq!(full.status.code(), Some(0), "{}", stderr(&full));
+    let full_stdout = text(&full);
+    assert_eq!(usize_field(&full_stdout, "tick:"), end_tick);
+    assert_eq!(f64_field(&full_stdout, "time:"), end_time);
+
+    let start_bytes = fs::read(&start_png).expect("start png");
+    let end_bytes = fs::read(&end_png).expect("end png");
+    assert_ne!(
+        start_bytes, end_bytes,
+        "the default heightmap must differ from tick 0"
+    );
+    assert_eq!(&end_bytes[..8], b"\x89PNG\r\n\x1a\n");
+
+    for png in [&start_png, &end_png, &full_png] {
+        fs::remove_file(png).ok();
+    }
 }
 
 #[test]

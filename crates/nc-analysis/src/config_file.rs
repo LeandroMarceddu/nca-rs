@@ -1,10 +1,10 @@
 //! Strict TOML configuration loading shared by `nc-cli` and `nc-fixtures`.
 //!
-//! The schema is the one documented in `docs/INTERFACES.md`. Unknown keys and
-//! unknown enum values are hard errors (D015): a typo must never silently
-//! change a rule's behavior. Every semantic error carries the configuration
-//! file name, and TOML syntax/type errors also carry the line and column when
-//! the parser reports a span.
+//! The schema is the one documented in `docs/INTERFACES.md`. Unknown rule ids,
+//! unknown keys, and unknown enum values are hard errors (D015): a typo must
+//! never silently change a rule's behavior. Every semantic error carries the
+//! configuration file name, and TOML syntax/type errors also carry the line and
+//! column when the parser reports a span.
 //!
 //! ```no_run
 //! use nc_analysis::config_file::load_config;
@@ -14,7 +14,7 @@
 //! # Ok::<(), nc_analysis::ConfigError>(())
 //! ```
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::io;
@@ -127,6 +127,14 @@ pub enum ConfigError {
         /// Offending key.
         key: String,
     },
+    /// A `[rules."<id>"]` table names no registered rule.
+    #[error("{location}: unknown rule id {rule:?}; expected a registered rule id")]
+    UnknownRule {
+        /// File and span, when known.
+        location: ConfigLocation,
+        /// Offending rule id.
+        rule: String,
+    },
     /// A rule threshold is not numeric.
     #[error("{location}: rule {rule:?} threshold {key:?} must be a number, got {kind}")]
     InvalidThreshold {
@@ -189,6 +197,7 @@ impl ConfigError {
             | Self::UnknownMaterialPreset { location, .. }
             | Self::UnknownSeverity { location, .. }
             | Self::UnknownRuleKey { location, .. }
+            | Self::UnknownRule { location, .. }
             | Self::InvalidThreshold { location, .. }
             | Self::InvalidRuleValue { location, .. }
             | Self::InvalidMachine { location, .. }
@@ -205,6 +214,7 @@ impl ConfigError {
         | Self::UnknownMaterialPreset { location, .. }
         | Self::UnknownSeverity { location, .. }
         | Self::UnknownRuleKey { location, .. }
+        | Self::UnknownRule { location, .. }
         | Self::InvalidThreshold { location, .. }
         | Self::InvalidRuleValue { location, .. }
         | Self::InvalidMachine { location, .. }
@@ -306,7 +316,20 @@ pub fn parse_config(text: &str) -> Result<LoadedConfig, ConfigError> {
     }
 
     let mut rules = BTreeMap::new();
+    // D015: a rule table id must name a registered rule. A typo here would
+    // otherwise create settings that no rule ever reads, silently leaving the
+    // real rule at its defaults.
+    let registered_rules: BTreeSet<String> = crate::rules::all()
+        .into_iter()
+        .map(|rule| rule.id().as_str().to_string())
+        .collect();
     for (rule, entries) in raw.rules {
+        if !registered_rules.contains(rule.as_str()) {
+            return Err(ConfigError::UnknownRule {
+                location: ConfigLocation::default(),
+                rule,
+            });
+        }
         let mut settings = RuleSettings::default();
         for (key, value) in entries {
             match key.as_str() {
@@ -333,6 +356,9 @@ pub fn parse_config(text: &str) -> Result<LoadedConfig, ConfigError> {
                     settings.severity = Some(parse_severity(&rule, text)?);
                 }
                 _ => {
+                    // Threshold keys stay free-form (D032): `Rule` does not
+                    // expose its documented default keys, so an unrecognized
+                    // numeric key is stored rather than rejected.
                     let number = value
                         .as_float()
                         .or_else(|| value.as_integer().map(|integer| integer as f64))
@@ -810,6 +836,21 @@ clearance_mm = 2.5
         assert_eq!(settings.severity, None);
         assert_eq!(settings.threshold("plunge_feed_ratio", 0.0), 0.4);
         assert_eq!(settings.threshold("feed_margin", 0.0), 12.0);
+    }
+
+    #[test]
+    fn unknown_rule_id_is_an_error() {
+        let error = parse_config("[rules.\"modal.feed_mising\"]\nclearance_mm = 2.0\n")
+            .expect_err("unknown rule id");
+        assert!(matches!(
+            error,
+            ConfigError::UnknownRule { ref rule, .. } if rule == "modal.feed_mising"
+        ));
+        assert!(error.to_string().contains("unknown rule id"), "{error}");
+        assert!(
+            error.to_string().contains("modal.feed_mising"),
+            "the error names the typo: {error}"
+        );
     }
 
     #[test]

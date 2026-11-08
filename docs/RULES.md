@@ -50,13 +50,14 @@ default rather than disabling a rule.
 |---|---|---|---|---|---|
 | `parse.unsupported` | Error | Exact | - | - | A block the lossy parser skipped; raw line in evidence |
 | `parse.dialect_assumed` | Info | Exact | - | - | No dialect configured |
-| `parse.tool_hint_ambiguous` | Info | Exact | - | - | Comment dimension with no determinable unit || `modal.units_missing` | Warning | Exact | - | - | Motion before `G20`/`G21` |
+| `parse.tool_hint_ambiguous` | Info | Exact | - | - | Comment dimension with no determinable unit |
+| `modal.units_missing` | Warning | Exact | - | - | Motion before `G20`/`G21` |
 | `modal.distance_missing` | Warning | Exact | - | - | Motion before `G90`/`G91` |
 | `modal.feed_missing` | Error | Exact | - | - | First cutting move with no feed |
 | `modal.feed_nonpositive` | Error | Exact | - | - | `F0` or negative feed |
 | `modal.spindle_stopped` | Error | Exact | - | `machine` (for `spindle_manual`; otherwise evaluated) | Cutting with spindle stopped |
 | `modal.spindle_speed_zero` | Warning | Exact | - | - | `M3`/`M4` with `S0` or no `S` |
-| `modal.spindle_direction` | Info | Exact | - | `tool.right_hand:T<n>` | `M4` with a right-hand tool |
+| `modal.spindle_direction` | Info | Model | - | `tool.right_hand:T<n>` | `M4` with a right-hand tool |
 | `modal.tool_unknown` | Warning | Exact | - | tool table or hints non-empty | `T` not in the resolved table |
 | `modal.tool_zero` | Warning | Exact | - | - | Cutting with `T0` |
 | `modal.tool_change_mismatch` | Warning | Exact | - | - | `T` without `M6`, or `M6` without `T` |
@@ -75,10 +76,10 @@ default rather than disabling a rule.
 | `clearance.retract_below_stock` | Warning | Model | inferred ok | stock | Retract plane below the stock top |
 | `clearance.tool_end_in_material` | Warning | Model | inferred ok | stock | Program ends with the tool below the stock top |
 | `geometry.duplicate_hole` | Warning | Exact | - | - | Same tool, same XY, overlapping Z |
-| `geometry.overlapping_holes` | Warning | Exact | - | `tool.diameter:T<n>` | Hole centres closer than the tool diameter |
+| `geometry.overlapping_holes` | Warning | Model | - | `tool.diameter:T<n>` | Hole centres closer than the tool diameter |
 | `geometry.tiny_segment` | Info | Exact | - | - | Cutting segment under `min_segment_mm` |
 | `geometry.arc_radius_mismatch` | Error | Exact | - | - | Start/end radius differ beyond `arc_radius_mm` |
-| `geometry.arc_smaller_than_tool` | Warning | Exact | - | `tool.diameter:T<n>` | Internal arc radius below the tool radius |
+| `geometry.arc_smaller_than_tool` | Warning | Model | - | `tool.diameter:T<n>` | Internal arc radius below the tool radius |
 | `geometry.feed_out_of_range` | Warning | Exact | - | `machine` (max feed) | Programmed feed above the maximum |
 | `geometry.spindle_out_of_range` | Warning | Exact | - | `machine` (max rpm) | Spindle above the maximum |
 
@@ -91,6 +92,10 @@ default rather than disabling a rule.
   moves upward is a retract; it is not flagged.
 - **Rapid through stock:** a `Rapid` whose XY segment intersects the stock
   footprint while its Z is below the stock top. Z-only rapids are exempt.
+- **Exact travel extent:** every travel rule uses the motion's exact swept
+  extent: the start/end points plus `ArcRecord` extrema for that plane. An arc
+  whose endpoints are inside the envelope but whose sweep leaves it is a
+  finding. The same rule applies to stock XY and table-Z checks.
 - **Retract below stock:** a `Retract` whose end Z is below the stock top.
 - **Duplicate hole:** same tool, XY distance `<= hole_xy_mm`, and the Z ranges
   overlap. Canned records use their bottom Z; drilling moves use their end Z.
@@ -205,7 +210,6 @@ Common evidence keys, typed as `EvidenceValue`:
 | `centroid_mm` | Point3 | rest and thin-wall regions |
 | `measured` | Float | every threshold rule |
 | `threshold` | Float | threshold rules |
-| `measured` | Float | threshold rules |
 
 ## Why this matters
 

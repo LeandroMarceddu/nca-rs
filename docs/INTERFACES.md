@@ -817,8 +817,9 @@ Schema rules:
   numeric key as a flattened threshold;
 - `dialect` accepts `generic|grbl|linuxcnc|linux_cnc|mach3|fanuc`; an omitted
   dialect is `Generic` with `dialect_assumed = true`;
-- duplicate tool numbers and unknown keys are errors;
-- `ConfigError` carries an optional file/line/column location.
+- duplicate tool numbers, unknown keys, and unknown `[rules."<id>"]` ids are errors;
+- `ConfigError` carries an optional file/line/column location; `UnknownRule`
+  names an unregistered rule id.
 
 
 ## Report JSON
@@ -891,6 +892,6 @@ auto-blessed.
 | `nc-app` VIEW shell | complete |
 | `nc-app` SIMULATE mode | complete |
 | `nc-app` diagnostics/coverage UI | complete |
-| `nc-app` setup sheet, config loading, export | complete: TOML load, stock/tools/material/machine/sim/rules, SHA-keyed tool persistence, JSON/Markdown export |
+| `nc-app` setup sheet, config loading, export | complete: TOML load, stock/tools/material/machine/sim/rules, SHA-keyed tool persistence, JSON/Markdown export; lossy partial programs are viewable |
 | `nc-cli` commands and `nc-fixtures` harness | complete; 13 reviewed goldens |
 | Report goldens | reviewed and committed for the synthetic corpus |

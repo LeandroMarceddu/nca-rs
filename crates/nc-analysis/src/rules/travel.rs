@@ -1,15 +1,17 @@
 //! `travel.*` rules beyond the vertical-slice envelope check.
 //!
-//! `travel.z_below_table` checks motion endpoints against the configured
-//! machine table Z. `travel.stock_bounds` checks
-//! cutting endpoints against explicit stock. Both use the stored motion stream,
-//! so each finding maps to one source line.
+//! `travel.z_below_table` checks each motion's exact swept Z extent against the
+//! configured machine table Z. `travel.stock_bounds` checks the exact XY extent
+//! of each cutting motion against explicit stock. Both use the stored motion
+//! stream, so each finding maps to one source line; arcs contribute their
+//! swept extrema rather than only their endpoints.
 
 use std::collections::BTreeMap;
 
 use nc_gcode::MotionRecord;
 use nc_stock::{StockModel, StockSource};
 
+use super::extents::motion_extents;
 use crate::config::RuleSettings;
 use crate::report::Diagnostic;
 use crate::rule::{AnalysisModel, Requirements, Rule, RuleOutcome, StockRequirement};
@@ -27,7 +29,7 @@ pub fn rules() -> Vec<Box<dyn Rule>> {
     vec![Box::new(ZBelowTable), Box::new(StockBounds)]
 }
 
-/// Checks every motion endpoint against the configured table Z.
+/// Checks every motion's exact swept Z extent against the configured table Z.
 struct ZBelowTable;
 
 impl Rule for ZBelowTable {
@@ -61,16 +63,21 @@ impl Rule for ZBelowTable {
 
         let mut findings = Vec::new();
         for motion in &model.program.motions {
-            let end_z_mm = motion.end_mm[2];
-            if !end_z_mm.is_finite() {
+            let Some((extent_min, extent_max)) = motion_extents(motion) else {
                 continue;
-            }
-            // Exactly at the table Z is allowed; only a strictly lower endpoint
+            };
+            let min_z_mm = extent_min[2];
+            // Exactly at the table Z is allowed; only a strictly lower extent
             // fires.
-            if end_z_mm >= table_z_mm {
+            if min_z_mm >= table_z_mm {
                 continue;
             }
-            findings.push(z_below_table_finding(motion, end_z_mm, table_z_mm));
+            findings.push(z_below_table_finding(
+                motion,
+                min_z_mm,
+                extent_max[2],
+                table_z_mm,
+            ));
         }
         RuleOutcome::Findings(findings)
     }
@@ -82,7 +89,8 @@ impl Rule for ZBelowTable {
     }
 }
 
-/// Checks cutting endpoints against the explicit stock XY footprint.
+/// Checks cutting motions' exact XY extents against the explicit stock
+/// footprint.
 struct StockBounds;
 
 impl Rule for StockBounds {
@@ -115,34 +123,45 @@ impl Rule for StockBounds {
             if !motion.kind.is_cutting() {
                 continue;
             }
-            let x = motion.end_mm[0];
-            let y = motion.end_mm[1];
-            if !x.is_finite() || !y.is_finite() {
+            let Some((extent_min, extent_max)) = motion_extents(motion) else {
                 continue;
-            }
+            };
             // Exactly on the stock edge is still inside the footprint.
-            let inside = x >= min_x && x <= max_x && y >= min_y && y <= max_y;
+            let inside = extent_min[0] >= min_x
+                && extent_max[0] <= max_x
+                && extent_min[1] >= min_y
+                && extent_max[1] <= max_y;
             if inside {
                 continue;
             }
-            findings.push(stock_bounds_finding(source, motion));
+            findings.push(stock_bounds_finding(source, motion, extent_min, extent_max));
         }
         RuleOutcome::Findings(findings)
     }
 
     fn why_it_matters(&self) -> &'static str {
-        "A cutting move that ends outside the stock is cutting air where no \
+        "A cutting move that sweeps outside the stock is cutting air where no \
          material is expected, usually from a wrong offset or a missing clamp \
          check; the pass can gouge the fixture or leave the part undersized."
     }
 }
 
-/// Builds one finding for an endpoint below the table.
-fn z_below_table_finding(motion: &MotionRecord, value_mm: f64, min_mm: f64) -> Diagnostic {
+/// Builds one finding for a motion whose Z extent reaches below the table.
+fn z_below_table_finding(
+    motion: &MotionRecord,
+    value_mm: f64,
+    extent_max_mm: f64,
+    min_mm: f64,
+) -> Diagnostic {
     let mut evidence = BTreeMap::new();
     evidence.insert("axis".to_string(), EvidenceValue::Text("Z".to_string()));
     evidence.insert("value_mm".to_string(), EvidenceValue::Float(value_mm));
     evidence.insert("min_mm".to_string(), EvidenceValue::Float(min_mm));
+    evidence.insert("extent_min_mm".to_string(), EvidenceValue::Float(value_mm));
+    evidence.insert(
+        "extent_max_mm".to_string(),
+        EvidenceValue::Float(extent_max_mm),
+    );
     evidence.insert(
         "tool".to_string(),
         EvidenceValue::Int(i64::from(motion.tool)),
@@ -156,13 +175,20 @@ fn z_below_table_finding(motion: &MotionRecord, value_mm: f64, min_mm: f64) -> D
         line: motion.line,
         column: 0,
         line_end: motion.line,
-        message: format!("Z endpoint {value_mm:.3} mm is below the machine table Z {min_mm:.3} mm"),
+        message: format!(
+            "Z extent reaches {value_mm:.3} mm, below the machine table Z {min_mm:.3} mm"
+        ),
         evidence,
     }
 }
 
-/// Builds one finding for a cutting endpoint outside the stock footprint.
-fn stock_bounds_finding(source: StockSource, motion: &MotionRecord) -> Diagnostic {
+/// Builds one finding for a cutting extent outside the stock footprint.
+fn stock_bounds_finding(
+    source: StockSource,
+    motion: &MotionRecord,
+    extent_min_mm: [f64; 3],
+    extent_max_mm: [f64; 3],
+) -> Diagnostic {
     let mut evidence = BTreeMap::new();
     evidence.insert(
         "stock_source".to_string(),
@@ -173,6 +199,14 @@ fn stock_bounds_finding(source: StockSource, motion: &MotionRecord) -> Diagnosti
         EvidenceValue::Point3(motion.start_mm),
     );
     evidence.insert("end_mm".to_string(), EvidenceValue::Point3(motion.end_mm));
+    evidence.insert(
+        "extent_min_mm".to_string(),
+        EvidenceValue::Point3(extent_min_mm),
+    );
+    evidence.insert(
+        "extent_max_mm".to_string(),
+        EvidenceValue::Point3(extent_max_mm),
+    );
     evidence.insert(
         "tool".to_string(),
         EvidenceValue::Int(i64::from(motion.tool)),
@@ -186,8 +220,9 @@ fn stock_bounds_finding(source: StockSource, motion: &MotionRecord) -> Diagnosti
         column: 0,
         line_end: motion.line,
         message: format!(
-            "cutting endpoint [{:.3}, {:.3}] mm is outside the stock XY footprint",
-            motion.end_mm[0], motion.end_mm[1]
+            "cutting extent X [{:.3}, {:.3}], Y [{:.3}, {:.3}] mm is outside the stock XY \
+             footprint",
+            extent_min_mm[0], extent_max_mm[0], extent_min_mm[1], extent_max_mm[1]
         ),
         evidence,
     }

@@ -58,13 +58,7 @@ pub fn text(summary: &Summary<'_>) -> String {
         warnings,
         infos
     );
-    let _ = writeln!(
-        out,
-        "coverage: {}/{} evaluated, {} skipped",
-        report.coverage.evaluated,
-        report.coverage.total,
-        report.coverage.skipped.len()
-    );
+    let _ = writeln!(out, "coverage: {}", coverage_headline(report));
 
     if report.diagnostics.is_empty() {
         let _ = writeln!(out, "\ndiagnostics:\n  none");
@@ -151,13 +145,7 @@ pub fn markdown(summary: &Summary<'_>) -> String {
         warnings,
         infos
     );
-    let _ = writeln!(
-        out,
-        "| coverage | {}/{} evaluated, {} skipped |",
-        report.coverage.evaluated,
-        report.coverage.total,
-        report.coverage.skipped.len()
-    );
+    let _ = writeln!(out, "| coverage | {} |", coverage_headline(report));
 
     let _ = writeln!(out);
     let _ = writeln!(out, "## Diagnostics");
@@ -213,6 +201,19 @@ fn skip_line(skip: &SkippedRule) -> String {
     format!(
         "[{}] missing {}: {}",
         skip.rule, skip.missing_input, skip.reason
+    )
+}
+
+/// `evaluated + skipped_rule_count == total`; the record count is separate
+/// because one skipped rule may name several missing inputs.
+fn coverage_headline(report: &Report) -> String {
+    let coverage = &report.coverage;
+    let skipped_rules = coverage.skipped_rule_count();
+    let records = coverage.skipped_count();
+    let entry_word = if records == 1 { "entry" } else { "entries" };
+    format!(
+        "{}/{} evaluated, {} skipped ({} {})",
+        coverage.evaluated, coverage.total, skipped_rules, records, entry_word
     )
 }
 

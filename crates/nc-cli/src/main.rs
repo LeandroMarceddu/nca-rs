@@ -10,6 +10,8 @@
 //! nca rules
 //! ```
 //!
+//! `simulate` runs through the end of the program unless `--to-line` is given.
+//!
 //! Exit codes are `0` (no finding at or above `--fail-on`), `1` (at least one
 //! such finding), and `2` (the tool could not produce a report). This crate
 //! must never depend on GPUI or `nc-app`; `nca view` spawns the sibling
@@ -174,19 +176,24 @@ fn command_simulate(args: &[String]) -> Result<ExitCode, CliError> {
     }
 
     let mut simulation = Simulation::new(program, stock, &config.tools, &sim_config)?;
-    if let Some(line) = args.to_line {
-        if simulation
-            .timeline()
-            .time_for_line_at_or_after(line)
-            .is_some()
-        {
-            simulation.seek_to_line(line);
-        } else {
-            // A line after the last indexed motion (for example the final
-            // `M30`) means "simulate through the end", not "stay at tick 0".
-            let end_s = simulation.timeline().total_time_s();
-            simulation.seek_to_time(end_s);
+    let end_s = simulation.timeline().total_time_s();
+    match args.to_line {
+        Some(line) => {
+            if simulation
+                .timeline()
+                .time_for_line_at_or_after(line)
+                .is_some()
+            {
+                simulation.seek_to_line(line);
+            } else {
+                // A line after the last indexed motion (for example the final
+                // `M30`) means "simulate through the end", not "stay at tick 0".
+                simulation.seek_to_time(end_s);
+            }
         }
+        // With no explicit target, show the fully cut heightmap. The old
+        // default stopped at tick 0 and exported uncut stock.
+        None => simulation.seek_to_time(end_s),
     }
 
     if let Some(path) = args.out_heightmap.as_deref() {
@@ -587,6 +594,7 @@ usage:
   nca --version
 
 check defaults: --format json --fail-on error
+simulate defaults: no --to-line runs through the end of the program
 
 exit codes:
   0  no finding at or above --fail-on
