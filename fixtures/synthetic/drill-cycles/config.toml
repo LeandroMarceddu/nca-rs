@@ -1,0 +1,13 @@
+[parse]
+dialect = "generic"
+
+[stock]
+origin_mm = [0, 0, -12]
+size_mm = [50, 30, 12]
+
+[[tool]]
+number = 1
+shape = "drill"
+diameter_mm = 4.0
+flutes = 2
+tip_angle_deg = 118.0

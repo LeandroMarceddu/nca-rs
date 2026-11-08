@@ -1,0 +1,11 @@
+(manual spindle: no M3/M4)
+G21 G90 G54 G17
+G0 Z5
+G0 X5 Y5
+G1 Z-1 F120
+G1 X35 F600
+G1 Y25
+G1 X5
+G1 Y5
+G0 Z5
+M30

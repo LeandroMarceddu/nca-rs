@@ -1,0 +1,18 @@
+# Rust
+/target
+**/*.rs.bk
+*.pdb
+*.profraw
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Local runtime data
+*.log
+/local/
+/config/
+/sessions/

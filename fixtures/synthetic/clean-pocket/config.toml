@@ -1,0 +1,27 @@
+[parse]
+dialect = "generic"
+
+[machine]
+travel_min_mm = [0, 0, -50]
+travel_max_mm = [200, 150, 10]
+max_feed_mm_min = 4000
+max_spindle_rpm = 24000
+rapid_rate_mm_min = 3000
+spindle_manual = false
+
+[stock]
+origin_mm = [0, 0, -10]
+size_mm = [60, 40, 10]
+
+[[tool]]
+number = 1
+name = "6 mm 2F flat"
+shape = "flat"
+diameter_mm = 6.0
+flutes = 2
+stickout_mm = 30
+flute_length_mm = 18
+right_hand = true
+
+[material]
+preset = "aluminum-6061"

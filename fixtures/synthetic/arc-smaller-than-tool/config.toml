@@ -1,0 +1,12 @@
+[parse]
+dialect = "generic"
+
+[stock]
+origin_mm = [0, 0, -10]
+size_mm = [50, 30, 10]
+
+[[tool]]
+number = 1
+shape = "flat"
+diameter_mm = 6.0
+flutes = 2

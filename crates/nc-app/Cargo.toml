@@ -1,0 +1,32 @@
+[package]
+name = "nc-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "nc_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nca-gui"
+path = "src/main.rs"
+
+[dependencies]
+nc-core.workspace = true
+nc-viewer.workspace = true
+nc-gcode.workspace = true
+nc-stock.workspace = true
+nc-sim.workspace = true
+nc-analysis.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+crossbeam-channel.workspace = true
+gpui-kit.workspace = true

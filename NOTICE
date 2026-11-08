@@ -1,0 +1,29 @@
+ghs-rs
+Copyright 2026 Leandro Marceddu
+
+This product is an independent Rust implementation inspired by the behavior of
+ioSender, a G-code sender for grblHAL and Grbl:
+
+    ioSender — https://github.com/terjeio/ioSender
+    Copyright (c) 2019-2023 Io Engineering (Terje Io)
+    Licensed under the BSD 3-Clause License.
+
+No ioSender source code is included in this repository. ioSender is used as a
+behavioral reference and compatibility target. Any translation strings, setting
+descriptions, or other data derived from ioSender will be attributed here and
+remain subject to their original license.
+
+UI framework and components:
+
+    GPUI Kit — https://github.com/longbridge/gpui-kit
+    Licensed under the Apache License, Version 2.0.
+
+    GPUI — https://github.com/zed-industries/zed
+    Copyright Zed Industries, Inc.
+    Licensed under the Apache License, Version 2.0.
+
+grblHAL is a separate firmware project: https://github.com/grblHAL
+
+This software controls machinery that can cause serious injury or damage.
+It is provided "as is", without warranty of any kind. See LICENSE-MIT and
+LICENSE-APACHE.

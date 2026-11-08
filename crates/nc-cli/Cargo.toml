@@ -1,0 +1,22 @@
+[package]
+name = "nc-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "nca"
+path = "src/main.rs"
+
+[dependencies]
+nc-core.workspace = true
+nc-gcode.workspace = true
+nc-stock.workspace = true
+nc-sim.workspace = true
+nc-analysis.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

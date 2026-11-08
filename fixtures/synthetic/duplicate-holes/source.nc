@@ -1,0 +1,17 @@
+(repeated drilling of the same hole)
+G21 G90 G54 G17
+G0 Z5
+G0 X20 Y20
+S8000
+M3
+G81 Z-6 R2 F120
+G80
+G0 X20 Y20
+G81 Z-6 R2 F120
+G80
+G0 X40 Y20
+G81 Z-6 R2 F120
+G80
+G0 Z5
+M5
+M30

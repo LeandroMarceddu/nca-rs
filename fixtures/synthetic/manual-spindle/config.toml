@@ -1,0 +1,17 @@
+[parse]
+dialect = "generic"
+
+[machine]
+travel_min_mm = [0, 0, -50]
+travel_max_mm = [100, 100, 10]
+spindle_manual = true
+
+[stock]
+origin_mm = [0, 0, -10]
+size_mm = [40, 30, 10]
+
+[[tool]]
+number = 1
+shape = "flat"
+diameter_mm = 6.0
+flutes = 2

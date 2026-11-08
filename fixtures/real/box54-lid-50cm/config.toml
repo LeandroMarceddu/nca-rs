@@ -1,0 +1,5 @@
+# Zero-config real-world case: stock is inferred and tools come from the
+# header comments. Machine limits are intentionally omitted because the file
+# does not state them.
+[parse]
+dialect = "generic"

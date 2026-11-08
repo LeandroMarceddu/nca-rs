@@ -1,0 +1,14 @@
+(rapid at depth across the stock)
+G21 G90 G54 G17
+G0 Z5
+G0 X5 Y20
+M3 S10000
+G1 Z-2 F100
+G1 X55 F800
+G0 Z5
+G0 X5 Y20
+G0 Z-1.5
+G0 X55
+G0 Z5
+M5
+M30

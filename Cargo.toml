@@ -1,0 +1,52 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/nc-core",
+  "crates/nc-viewer",
+  "crates/nc-gcode",
+  "crates/nc-stock",
+  "crates/nc-sim",
+  "crates/nc-analysis",
+  "crates/nc-app",
+  "crates/nc-cli",
+  "crates/nc-fixtures",
+]
+default-members = ["crates/nc-cli", "crates/nc-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/LeandroMarceddu/nca-rs"
+authors = ["Leandro Marceddu"]
+
+[workspace.dependencies]
+nc-core = { path = "crates/nc-core" }
+nc-viewer = { path = "crates/nc-viewer" }
+nc-gcode = { path = "crates/nc-gcode" }
+nc-stock = { path = "crates/nc-stock" }
+nc-sim = { path = "crates/nc-sim" }
+nc-analysis = { path = "crates/nc-analysis" }
+nc-app = { path = "crates/nc-app" }
+nc-cli = { path = "crates/nc-cli" }
+nc-fixtures = { path = "crates/nc-fixtures" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+libm = "0.2"
+sha2 = "0.10"
+toml = "0.8"
+proptest = "1"
+crossbeam-channel = "0.5"
+gpui-kit = "0.8.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.dev.package."*"]
+opt-level = 2
