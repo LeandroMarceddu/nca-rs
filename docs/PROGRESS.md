@@ -58,6 +58,11 @@ project knowledge store is lost.
   (2026-11-08).
 - **Semantic rendering** — `MoveKind` end-to-end; `SegmentKind` removed; the
   painter, toggles, dashes, and hole markers use all 13 kinds (2026-11-08).
+- **CLI and fixtures** — strict TOML loader, `nca check|view|simulate|rules`,
+  fixture harness and golden comparison (2026-11-08). Goldens are drafts pending
+  the feedless/peck parser fixes and review.
+- **CI** — Linux/macOS/Windows builds, Linux clippy/test, GUI build all green
+  (run 42467554129).
 
 ## Version control
 

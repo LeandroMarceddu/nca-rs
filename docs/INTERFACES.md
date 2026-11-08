@@ -779,7 +779,35 @@ clearance_mm = 2.0
 ```
 
 Config loading belongs to `nc-app` and `nc-cli`. Unknown keys are errors, not
-silently ignored, so a typo cannot disable a rule.
+silently ignored, so a typo cannot disable a rule. The shared loader lives in
+`nc-analysis::config_file`:
+
+```rust
+pub struct LoadedConfig {
+    pub analysis: AnalysisConfig,
+    pub dialect: Dialect,
+    pub dialect_assumed: bool,
+}
+pub fn parse_config(text: &str) -> Result<LoadedConfig, ConfigError>;
+pub fn load_config(path: &Path) -> Result<LoadedConfig, ConfigError>;
+```
+
+Schema rules:
+
+- every table is optional;
+- `[machine]` requires `travel_min_mm` and `travel_max_mm`;
+- `[stock]` requires `origin_mm` and `size_mm`;
+- `[[tool]]` requires `number`; every other field is optional and gets
+  `FieldSource::Config`;
+- `[material]` accepts a built-in `preset` and/or inline fields; inline values
+  override the preset;
+- `[rules."<id>"]` accepts `enabled` (default true), `severity`, and every other
+  numeric key as a flattened threshold;
+- `dialect` accepts `generic|grbl|linuxcnc|linux_cnc|mach3|fanuc`; an omitted
+  dialect is `Generic` with `dialect_assumed = true`;
+- duplicate tool numbers and unknown keys are errors;
+- `ConfigError` carries an optional file/line/column location.
+
 
 ## Report JSON
 
@@ -793,6 +821,40 @@ silently ignored, so a typo cannot disable a rule.
 - Per-rule cap 100 and total cap 1000; dropped counts live in `truncated`.
 - `geometry_uncertain_after` is present when the lossy parser stopped geometry.
 
+## `nc-fixtures`
+
+```rust
+pub const REQUIRED_FILES: [&str; 3] = ["source.nc", "config.toml", "NOTES.md"];
+pub const EXPECTED_FILE: &str = "expected.json";
+
+pub struct Fixture {
+    pub dir: PathBuf,
+    pub source: String,
+    pub config_text: String,
+    pub expected_text: Option<String>,
+}
+impl Fixture {
+    pub fn load(dir: &Path) -> Result<Self, FixtureError>;
+    pub fn run(&self) -> Result<Report, FixtureError>;
+}
+pub fn run_fixture(dir: &Path) -> Result<Report, FixtureError>;
+pub fn golden_text(report: &Report) -> String; // canonical pretty JSON + '\n'
+pub fn compare_reports(expected: &Report, actual: &Report) -> Result<(), FixtureDiff>;
+
+pub struct FixtureDiff {
+    pub pointer: String,          // RFC 6901, first difference
+    pub expected: Option<String>,
+    pub actual: Option<String>,
+    pub context: Option<String>,
+}
+```
+
+`expected.json` is optional at load time so unreviewed fixtures can exist; the
+golden test compares only fixtures that have one. Golden files are never
+auto-blessed.
+
+
+
 ## Deliberate naming refinements
 
 | Spec name | Contract name | Reason |
@@ -803,15 +865,18 @@ silently ignored, so a typo cannot disable a rule.
 | `ToolHint` in `nc-gcode` | defined in `nc-core`, re-exported by `nc-gcode` | `ToolTable::resolve` lives in `nc-core`; the reverse dependency would be a cycle. |
 | `MotionSpan` fields | adds poses, tool, feed, spindle | The simulator needs them; listing them avoids a second lookup table. |
 
-## Implementation status at the Phase 0 freeze
+## Implementation status
 
-| Area | Defined | Implemented |
-|---|---|---|
-| `nc-core` domain types and math | yes | yes |
-| `nc-viewer` `MoveKind` and styles | yes | yes |
-| `nc-gcode` motion records and `Program` fields | yes | types and builder yes; the parser still emits empty `motions`/`annotations`/`tool_hints` pending Phase 1 |
-| `nc-gcode` lossy API | yes | pending Phase 1 |
-| `nc-stock` model, heightmap, cutter | yes | inference, heightmap, cutter selection yes; sweep pending Phase 1 |
-| `nc-sim` API | yes | scaffold timeline/simulation pending Phase 1 replacement |
-| `nc-analysis` types and rule contract | yes | types yes; engine and registry pending Phase 2 |
-| `nc-app` shell, `nc-cli` commands | yes | Phase 0 stubs; real implementations pending Phases 1-3 |
+| Area | Status |
+|---|---|
+| `nc-core` domain types and math | complete |
+| `nc-viewer` `MoveKind`, display stream, render plans | complete; `SegmentKind` removed |
+| `nc-gcode` motion records, lossy mode, tool hints, limits, real-file parse | complete |
+| `nc-stock` inference, heightmap, cutter shapes, sweep | complete |
+| `nc-sim` timeline, tick engine, seek, stats | complete |
+| `nc-analysis` engine, coverage, canonical JSON, config loader | complete |
+| `nc-analysis` rules | three vertical-slice rules; full M1/M2 catalog pending |
+| `nc-app` VIEW shell | complete |
+| `nc-app` SIMULATE mode | in progress |
+| `nc-cli` commands and `nc-fixtures` harness | complete; goldens await review |
+| Report goldens | drafts generated; not yet reviewed or committed |
