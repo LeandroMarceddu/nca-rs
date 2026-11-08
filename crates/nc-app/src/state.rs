@@ -11,7 +11,10 @@ use std::sync::Arc;
 use std::collections::BTreeMap;
 
 use nc_core::{Dialect, ToolTable};
-use nc_gcode::{ParseError, ParserConfig, Program, SkippedBlock, parse_program_lossy};
+use nc_gcode::{
+    DialectDetection, ParseError, ParserConfig, Program, SkippedBlock, detect_dialect,
+    parse_program_lossy,
+};
 use nc_stock::{InferenceBasis, StockModel, StockSource};
 use nc_viewer::MoveKind;
 use serde::{Deserialize, Serialize};
@@ -19,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::file_browser::{ProgramFile, RecentFiles};
 use crate::program::{DEMO_NAME, DEMO_SOURCE, ProgramIndex, SourceLine, build_source_lines};
 use crate::setup::{SetupState, sha256_hex};
+use crate::sim::StockFill;
 use crate::theme::ThemeMode;
 
 /// Config directory name.
@@ -280,6 +284,43 @@ impl LoadedProgram {
     }
 }
 
+/// One validated file parsed with automatic or manual dialect selection.
+///
+/// Detection always reads the source before parsing, so the caller can apply
+/// the evidence later on the UI thread without re-reading the file.
+#[derive(Clone, Debug)]
+pub struct DialectLoad {
+    /// Parsed program and source.
+    pub loaded: LoadedProgram,
+    /// Detection result from the raw source, even when AUTO was off.
+    pub detection: Option<DialectDetection>,
+    /// Dialect used for this parse.
+    pub dialect: Dialect,
+}
+
+impl DialectLoad {
+    /// Parses a validated file, detecting its dialect when `auto` is true.
+    ///
+    /// Without a marker the AUTO path parses with Generic, matching the
+    /// assumed fallback. A manual path always uses `manual`.
+    #[must_use]
+    pub fn from_file(file: ProgramFile, auto: bool, manual: Dialect) -> Self {
+        let detection = detect_dialect(&file.source);
+        let dialect = if auto {
+            detection
+                .as_ref()
+                .map_or(Dialect::Generic, |detected| detected.dialect)
+        } else {
+            manual
+        };
+        Self {
+            loaded: LoadedProgram::from_file(file, dialect),
+            detection,
+            dialect,
+        }
+    }
+}
+
 /// Persisted portion of the application configuration.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -289,6 +330,8 @@ struct PersistedConfig {
     last_dir: Option<PathBuf>,
     /// Tool overlays keyed by the source SHA-256, never by path.
     tool_tables: BTreeMap<String, ToolTable>,
+    /// Explicit stock fill key; absent keeps the per-mode default.
+    stock_fill: Option<String>,
 }
 
 impl Default for PersistedConfig {
@@ -298,6 +341,7 @@ impl Default for PersistedConfig {
             recent: Vec::new(),
             last_dir: None,
             tool_tables: BTreeMap::new(),
+            stock_fill: None,
         }
     }
 }
@@ -316,6 +360,8 @@ pub struct NcaConfig {
     /// Comment hints are merged over one table at simulation and analysis
     /// time; user data always wins for a field it sets.
     pub tool_tables: BTreeMap<String, ToolTable>,
+    /// Explicit stock fill choice; `None` follows the per-mode default.
+    pub stock_fill: Option<StockFill>,
     path: Option<PathBuf>,
 }
 
@@ -326,6 +372,7 @@ impl Default for NcaConfig {
             recent: RecentFiles::new(),
             last_dir: None,
             tool_tables: BTreeMap::new(),
+            stock_fill: None,
             path: None,
         }
     }
@@ -360,6 +407,7 @@ impl NcaConfig {
             recent: RecentFiles::from_paths(persisted.recent),
             last_dir: persisted.last_dir,
             tool_tables: persisted.tool_tables,
+            stock_fill: persisted.stock_fill.as_deref().and_then(StockFill::parse),
             path: Some(path.to_path_buf()),
         }
     }
@@ -385,6 +433,7 @@ impl NcaConfig {
             recent: self.recent.paths().to_vec(),
             last_dir: self.last_dir.clone(),
             tool_tables: self.tool_tables.clone(),
+            stock_fill: self.stock_fill.map(|fill| fill.key().to_string()),
         };
         let text = serde_json::to_string_pretty(&persisted)
             .map_err(|error| format!("config serialization: {error}"))?;
@@ -406,6 +455,15 @@ impl NcaConfig {
     /// Changes the theme and persists it.
     pub fn set_theme(&mut self, theme: ThemeMode) {
         self.theme = theme;
+        self.persist();
+    }
+
+    /// Stores an explicit stock fill choice and persists it.
+    ///
+    /// This is a presentation preference: it never reaches analysis or the
+    /// simulator configuration.
+    pub fn set_stock_fill(&mut self, fill: StockFill) {
+        self.stock_fill = Some(fill);
         self.persist();
     }
 
@@ -544,8 +602,16 @@ impl NcaState {
 
     /// Loads the demo program, used when startup parsing of the demo fails.
     pub fn reset_to_demo(&mut self) {
-        let dialect = self.setup.dialect;
-        self.loaded = Some(LoadedProgram::demo(dialect));
+        let parsed_dialect = self.setup.dialect;
+        let mut loaded = LoadedProgram::demo(parsed_dialect);
+        if self.setup.dialect_auto {
+            self.setup
+                .apply_dialect_detection(detect_dialect(&loaded.source));
+            if self.setup.dialect != parsed_dialect {
+                loaded.reparse(self.setup.dialect);
+            }
+        }
+        self.loaded = Some(loaded);
         self.loading = false;
         self.selected_line = None;
         self.search.clear();
@@ -574,6 +640,21 @@ impl NcaState {
         }
     }
 
+    /// Runs AUTO detection against the current source.
+    ///
+    /// Does nothing while a manual dialect is selected. Returns `true` when
+    /// the effective dialect, assumed flag, or evidence changed.
+    pub fn detect_current_dialect(&mut self) -> bool {
+        if !self.setup.dialect_auto {
+            return false;
+        }
+        let detection = self
+            .loaded
+            .as_ref()
+            .and_then(|loaded| detect_dialect(&loaded.source));
+        self.setup.apply_dialect_detection(detection)
+    }
+
     /// SHA-256 of the current source, used only as a local tool-table key.
     #[must_use]
     pub fn loaded_hash(&self) -> Option<&str> {
@@ -599,6 +680,27 @@ impl NcaState {
     pub fn effective_stock(&self) -> Option<StockModel> {
         let inferred = self.loaded.as_ref().and_then(|loaded| loaded.stock);
         self.setup.effective_stock(inferred)
+    }
+
+    /// Effective stock fill for the active mode.
+    ///
+    /// VIEW defaults to [`StockFill::Ghost`] so the toolpath shows through the
+    /// block. SIMULATE defaults to [`StockFill::Solid`] so cuts are visible
+    /// immediately. An explicit persisted choice applies to both modes.
+    #[must_use]
+    pub fn stock_fill(&self) -> StockFill {
+        self.config.stock_fill.unwrap_or(match self.mode {
+            AppMode::View => StockFill::Ghost,
+            AppMode::Simulate => StockFill::Solid,
+        })
+    }
+
+    /// Stores and persists an explicit stock fill choice.
+    ///
+    /// Presentation only: the setup revision, analysis config, and simulation
+    /// settings are untouched.
+    pub fn set_stock_fill(&mut self, fill: StockFill) {
+        self.config.set_stock_fill(fill);
     }
 
     /// Truthful stock chip text.
@@ -780,6 +882,78 @@ mod tests {
     }
 
     #[test]
+    fn latchbase_file_auto_detects_makera_before_parsing() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/real/makera-latchbase/source.nc");
+        let file = crate::file_browser::read_program(&fixture).expect("fixture reads");
+        let load = DialectLoad::from_file(file, true, Dialect::Generic);
+        assert_eq!(load.dialect, Dialect::Makera);
+        let detection = load.detection.as_ref().expect("detected");
+        assert_eq!(detection.dialect, Dialect::Makera);
+        assert_eq!(detection.evidence.line, 33);
+        assert_eq!(detection.evidence.marker, "M851");
+        assert_eq!(detection.evidence.text, "M851 S100");
+        assert!(
+            load.loaded.errors.is_empty(),
+            "the detected Makera dialect must parse the file: {:?}",
+            load.loaded.errors
+        );
+        assert!(load.loaded.program.is_some());
+
+        let mut setup = SetupState::default();
+        setup.apply_dialect_detection(load.detection);
+        assert!(setup.dialect_auto);
+        assert_eq!(setup.dialect, Dialect::Makera);
+        assert!(!setup.dialect_assumed);
+        assert_eq!(setup.dialect_status_label(), "MAKERA DETECTED");
+        assert_eq!(
+            setup.dialect_auto_label(),
+            "AUTO \u{00b7} MAKERA \u{00b7} line 33 \u{00b7} M851 S100"
+        );
+    }
+
+    #[test]
+    fn auto_redetects_each_opened_file() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+        let latch =
+            crate::file_browser::read_program(&fixtures.join("real/makera-latchbase/source.nc"))
+                .expect("latchbase reads");
+        let clean =
+            crate::file_browser::read_program(&fixtures.join("synthetic/clean-pocket/source.nc"))
+                .expect("clean pocket reads");
+
+        let mut setup = SetupState::default();
+        let load = DialectLoad::from_file(latch, true, Dialect::Generic);
+        setup.apply_dialect_detection(load.detection);
+        assert_eq!(setup.dialect, Dialect::Makera);
+        assert!(!setup.dialect_assumed);
+
+        let load = DialectLoad::from_file(clean, true, Dialect::Generic);
+        setup.apply_dialect_detection(load.detection);
+        assert_eq!(setup.dialect, Dialect::Generic);
+        assert!(setup.dialect_assumed);
+        assert!(setup.dialect_evidence.is_none());
+        assert_eq!(setup.dialect_status_label(), "GENERIC ASSUMED");
+    }
+
+    #[test]
+    fn manual_file_load_keeps_the_manual_dialect() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/real/makera-latchbase/source.nc");
+        let file = crate::file_browser::read_program(&fixture).expect("fixture reads");
+        let load = DialectLoad::from_file(file, false, Dialect::Grbl);
+        assert_eq!(load.dialect, Dialect::Grbl);
+        assert!(load.detection.is_some(), "detection is still reported");
+
+        let mut setup = SetupState::default();
+        setup.set_dialect(Dialect::Grbl);
+        assert!(!setup.apply_dialect_detection(load.detection));
+        assert_eq!(setup.dialect, Dialect::Grbl);
+        assert!(!setup.dialect_auto);
+        assert_eq!(setup.dialect_status_label(), "DIALECT: GRBL");
+    }
+
+    #[test]
     fn unsupported_code_fixture_loads_partial_and_analyzes() {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/synthetic/unsupported-code/source.nc");
@@ -949,6 +1123,80 @@ mod tests {
             Some(6.0)
         );
         assert!(loaded.tools_for("hash-other").is_empty());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn stock_fill_defaults_follow_the_mode_without_touching_analysis() {
+        let mut state = NcaState::new(NcaConfig::default());
+        assert_eq!(state.mode, AppMode::View);
+        assert_eq!(state.stock_fill(), StockFill::Ghost);
+
+        let loaded = state.loaded.as_ref().expect("demo");
+        let program = Arc::clone(loaded.program.as_ref().expect("demo program"));
+        let name = loaded.name.clone();
+        let source = Arc::clone(&loaded.source);
+        let registry = nc_analysis::RuleRegistry::from_rules(nc_analysis::rules::all());
+        let report_for = |state: &NcaState| {
+            let config = state.setup.analysis_config(ToolTable::new());
+            let request =
+                nc_analysis::AnalysisRequest::new(&name, &source, &config, state.setup.dialect)
+                    .with_dialect_assumed(state.setup.dialect_assumed);
+            nc_analysis::analyze(&program, &request, &registry).to_json_pretty()
+        };
+        let revision = state.setup.revision;
+        let before_config = state.setup.analysis_config(ToolTable::new());
+        let before_sim = state.setup.sim.clone();
+        let before_report = report_for(&state);
+
+        state.mode = AppMode::Simulate;
+        assert_eq!(state.stock_fill(), StockFill::Solid);
+        state.set_stock_fill(StockFill::CutOnly);
+        assert_eq!(state.stock_fill(), StockFill::CutOnly);
+        assert_eq!(
+            state.setup.revision, revision,
+            "the setup draft must not move"
+        );
+        assert_eq!(
+            state.setup.analysis_config(ToolTable::new()),
+            before_config,
+            "stock appearance must not reach analysis"
+        );
+        assert_eq!(
+            state.setup.sim, before_sim,
+            "stock appearance is not sim config"
+        );
+        assert_eq!(
+            report_for(&state),
+            before_report,
+            "verdict text must not move"
+        );
+
+        state.mode = AppMode::View;
+        assert_eq!(
+            state.stock_fill(),
+            StockFill::CutOnly,
+            "an explicit choice applies to both modes"
+        );
+    }
+
+    #[test]
+    fn stock_fill_round_trips_in_the_app_config() {
+        let path = scratch_path("stock-fill");
+        let mut config = NcaConfig::load_from(&path);
+        assert_eq!(config.stock_fill, None);
+        config.set_stock_fill(StockFill::CutOnly);
+        assert_eq!(
+            NcaConfig::load_from(&path).stock_fill,
+            Some(StockFill::CutOnly)
+        );
+
+        fs::write(&path, r#"{"stock_fill":"glass"}"#).expect("write invalid fill");
+        assert_eq!(
+            NcaConfig::load_from(&path).stock_fill,
+            None,
+            "an invalid persisted value falls back to the mode default"
+        );
         let _ = fs::remove_file(path);
     }
 

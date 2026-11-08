@@ -1,0 +1,376 @@
+name: Release
+
+# A matching tag push builds both binaries for Linux, Windows, and macOS,
+# writes SHA256SUMS.txt, and publishes a normal GitHub Release marked Latest.
+# The build is unsigned: no code signing, notarization, Authenticode, or
+# installer. See docs/RELEASE.md for the gate list and the advisory-only
+# policy. Network access is limited to build infrastructure: GitHub Actions,
+# apt, and Cargo. The product itself has no network path.
+
+"on":
+  push:
+    # Workflow tag filters are globs, not regular expressions. This broad
+    # filter is narrowed by the prepare job, which enforces the release tag
+    # pattern and requires an annotated tag object.
+    tags:
+      - "v[0-9]*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing annotated release tag to build, for example v0.5.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  prepare:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.verify.outputs.version }}
+    steps:
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+(\.[0-9]+){1,2}(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$tag' is not a supported release tag."
+            echo "::error::Expected vMAJOR.MINOR[.PATCH][-pre], for example v0.5.0."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag: $tag"
+
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify annotated tag and workspace version
+        id: verify
+        shell: bash
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="$TAG"
+          object_type="$(git cat-file -t "refs/tags/${tag}" 2>/dev/null || true)"
+          if [ "$object_type" != "tag" ]; then
+            echo "::error::${tag} is not an annotated tag (git object type: ${object_type:-missing})."
+            echo "::error::Create it with: git tag -a ${tag} -m \"nca-rs ${tag#v}\""
+            exit 1
+          fi
+          tag_commit="$(git rev-parse "refs/tags/${tag}^{commit}")"
+          head_commit="$(git rev-parse HEAD)"
+          if [ "$tag_commit" != "$head_commit" ]; then
+            echo "::error::HEAD (${head_commit}) is not the commit of tag ${tag} (${tag_commit})."
+            exit 1
+          fi
+          version="$(python3 -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("Cargo.toml").read_text())["workspace"]["package"]["version"])')"
+          if [ "v${version}" != "$tag" ]; then
+            echo "::error::Cargo.toml workspace version is ${version}, but the tag is ${tag}."
+            echo "::error::Expected tag v${version}. Update the version, commit, and create the tag again."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Release ${tag}: workspace version ${version}, commit ${head_commit}"
+
+  linux:
+    name: Package (Linux x86_64)
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.1
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev libudev-dev \
+            libfontconfig1-dev libfreetype6-dev libwayland-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libvulkan1
+
+      - name: Build release binaries
+        run: cargo build --release -p nc-cli -p nc-app
+
+      - name: Package Linux archive
+        id: package
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$(uname -m)" != "x86_64" ]; then
+            echo "::error::Expected an x86_64 Linux runner, found $(uname -m)."
+            exit 1
+          fi
+          name="nca-rs-${TAG}-linux-x86_64"
+          stage="dist/${name}"
+          mkdir -p "$stage"
+          install -m 0755 target/release/nca "$stage/nca"
+          install -m 0755 target/release/nca-gui "$stage/nca-gui"
+          install -m 0644 README.md LICENSE-APACHE LICENSE-MIT NOTICE "$stage/"
+          install -m 0644 packaging/README.md "$stage/PACKAGING.md"
+          tar -czf "dist/${name}.tar.gz" -C dist "$name"
+          echo "archive=dist/${name}.tar.gz" >> "$GITHUB_OUTPUT"
+          ls -l "dist/${name}.tar.gz"
+          tar -tzf "dist/${name}.tar.gz" | sort
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: nca-rs-${{ needs.prepare.outputs.tag }}-linux
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: Package (Windows x86_64)
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.1
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries
+        run: cargo build --release -p nc-cli -p nc-app
+
+      - name: Package Windows archive
+        id: package
+        shell: pwsh
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
+            throw "Expected an AMD64 Windows runner, found $env:PROCESSOR_ARCHITECTURE"
+          }
+          $name = "nca-rs-$env:TAG-windows-x86_64"
+          $stage = Join-Path "dist" $name
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -Path "target/release/nca.exe" -Destination $stage
+          Copy-Item -Path "target/release/nca-gui.exe" -Destination $stage
+          Copy-Item -Path README.md, LICENSE-APACHE, LICENSE-MIT, NOTICE -Destination $stage
+          Copy-Item -Path "packaging/README.md" -Destination (Join-Path $stage "PACKAGING.md")
+          $archive = "dist/$name.zip"
+          # Use Windows' bundled bsdtar so zip entries always use forward slashes.
+          $tar = Join-Path $env:SystemRoot "System32/tar.exe"
+          & $tar -c --format zip -f $archive -C "dist" $name
+          if ($LASTEXITCODE -ne 0) { throw "tar.exe failed to create $archive" }
+          "archive=$archive" >> $env:GITHUB_OUTPUT
+          Get-Item $archive | ForEach-Object { "archive: $($_.FullName) ($($_.Length) bytes)" }
+          & $tar -tf $archive
+          if ($LASTEXITCODE -ne 0) { throw "tar.exe failed to list $archive" }
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: nca-rs-${{ needs.prepare.outputs.tag }}-windows
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    name: Package (macOS)
+    needs: prepare
+    runs-on: macos-latest
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.1
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries
+        run: cargo build --release -p nc-cli -p nc-app
+
+      - name: Package macOS archive
+        id: package
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64|amd64) arch="x86_64" ;;
+            arm64|aarch64) arch="aarch64" ;;
+            *)
+              echo "::error::Unsupported macOS architecture: $arch"
+              exit 1
+              ;;
+          esac
+          name="nca-rs-${TAG}-macos-${arch}"
+          stage="dist/${name}"
+          mkdir -p "$stage"
+          install -m 0755 target/release/nca "$stage/nca"
+          install -m 0755 target/release/nca-gui "$stage/nca-gui"
+          install -m 0644 README.md LICENSE-APACHE LICENSE-MIT NOTICE "$stage/"
+          install -m 0644 packaging/README.md "$stage/PACKAGING.md"
+          tar -czf "dist/${name}.tar.gz" -C dist "$name"
+          echo "archive=dist/${name}.tar.gz" >> "$GITHUB_OUTPUT"
+          ls -l "dist/${name}.tar.gz"
+          tar -tzf "dist/${name}.tar.gz" | sort
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: nca-rs-${{ needs.prepare.outputs.tag }}-macos
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs: [prepare, linux, windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Verify exactly one archive per platform
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          linux="dist/nca-rs-${TAG}-linux-x86_64.tar.gz"
+          windows="dist/nca-rs-${TAG}-windows-x86_64.zip"
+          macos=(dist/nca-rs-"${TAG}"-macos-*.tar.gz)
+          for file in "$linux" "$windows"; do
+            if [ ! -s "$file" ]; then
+              echo "::error::Missing or empty release archive: $file"
+              exit 1
+            fi
+          done
+          if [ "${#macos[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one macOS archive, found ${#macos[@]}."
+            printf '  %s\n' "${macos[@]}"
+            exit 1
+          fi
+          if [ ! -s "${macos[0]}" ]; then
+            echo "::error::Empty macOS release archive: ${macos[0]}"
+            exit 1
+          fi
+          found=(dist/*)
+          if [ "${#found[@]}" -ne 3 ]; then
+            echo "::error::Expected exactly 3 archives before checksums, found ${#found[@]}."
+            printf '  %s\n' "${found[@]}"
+            exit 1
+          fi
+          printf 'Linux: %s\nWindows: %s\nmacOS: %s\n' "$linux" "$windows" "${macos[0]}"
+
+      - name: Write SHA-256 checksums
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum \
+            nca-rs-"${TAG}"-linux-*.tar.gz \
+            nca-rs-"${TAG}"-windows-*.zip \
+            nca-rs-"${TAG}"-macos-*.tar.gz > SHA256SUMS.txt
+          if [ "$(wc -l < SHA256SUMS.txt)" -ne 3 ]; then
+            echo "::error::SHA256SUMS.txt must cover exactly the three archives."
+            cat SHA256SUMS.txt
+            exit 1
+          fi
+          cat SHA256SUMS.txt
+
+      - name: Publish normal GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          token: ${{ github.token }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: nca-rs ${{ needs.prepare.outputs.tag }}
+          draft: false
+          prerelease: false
+          make_latest: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          # Never silently replace assets under an existing tag. A rerun after
+          # publication must fail; cut a new patch release instead.
+          overwrite_files: false
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          body: |
+            nca-rs ${{ needs.prepare.outputs.tag }} is a read-only NC viewer,
+            deterministic preflight analyzer, and 2.5D stock simulator for
+            3-axis CNC milling. It never connects to a controller, never sends
+            motion, and never edits G-code.
+
+            **Unsigned builds.** These archives are not code-signed, notarized,
+            or Authenticode-signed, and there is no installer. Windows
+            SmartScreen and macOS Gatekeeper warn on first launch; use a
+            per-file or per-app override, never a system-wide disable. The
+            Linux GUI needs the host Wayland or X11 session and Vulkan
+            libraries; see PACKAGING.md in the archive. The CLI does not need
+            the GUI runtime libraries.
+
+            **Advisory, not a safety verdict.** Findings are advisory and
+            explainable, but a clean report does not mean a program is safe to
+            run. The analyzer does not model chatter, cutter force, material
+            defects, workholding slip, or fixture collisions.
+
+            Assets: Linux x86_64 `.tar.gz`, Windows x86_64 `.zip`, and macOS
+            `.tar.gz` (the file name records the runner architecture). Each
+            archive contains `nca`, `nca-gui`, README.md, LICENSE-APACHE,
+            LICENSE-MIT, NOTICE, and PACKAGING.md. The macOS archive contains
+            bare binaries, not a `.app` bundle.
+
+            Verify every download against `SHA256SUMS.txt` before running it.
+            Release process and known limitations are in docs/RELEASE.md and
+            CHANGELOG.md in the repository.

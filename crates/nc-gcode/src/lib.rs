@@ -157,6 +157,7 @@
 
 mod block;
 mod config;
+pub mod dialect_detect;
 mod error;
 mod expression;
 mod lexer;
@@ -172,6 +173,9 @@ mod builder;
 #[cfg(any(test, feature = "test-util"))]
 pub use builder::ProgramBuilder;
 pub use config::{DEFAULT_MAX_FILE_BYTES, MAX_COORDINATE_MM, MIN_ARC_RADIUS_MM, ParserConfig};
+pub use dialect_detect::{
+    DialectDetection, DialectEvidence, EVIDENCE_TEXT_MAX_BYTES, detect_dialect,
+};
 pub use error::{ParseError, ParseErrorKind, ParseWarning, WarningKind};
 pub use expression::{
     MAX_EXPRESSION_BYTES, MAX_EXPRESSION_DEPTH, MAX_NAMED_PARAMETERS, MAX_NUMERIC_PARAMETERS,

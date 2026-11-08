@@ -44,6 +44,21 @@ cargo run -p nc-app            # nca-gui
 cargo run -p nc-cli -- --help  # nca
 ```
 
+## Releases
+
+Public releases are tagged `vMAJOR.MINOR.PATCH`, for example `v0.5.0`, and are
+built by the tag-driven [release workflow](.github/workflows/release.yml) for
+Linux x86_64, Windows x86_64, and macOS (the archive name records the runner
+architecture). Each archive contains `nca`, `nca-gui`, the README, both
+licenses, `NOTICE`, and `PACKAGING.md`; `SHA256SUMS.txt` is published beside
+the archives. Verify it before running a downloaded archive.
+
+Builds are unsigned and there is no installer. The Linux GUI uses the host
+Wayland/X11 and Vulkan libraries. See [`docs/RELEASE.md`](docs/RELEASE.md) for
+the maintainer runbook, and [`packaging/README.md`](packaging/README.md) for
+archive contents and runtime requirements. The analyzer is advisory: a clean
+report is not a safety verdict.
+
 ## Documentation
 
 - `docs/SPEC.md` - the product specification.

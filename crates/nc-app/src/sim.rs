@@ -347,6 +347,113 @@ pub fn follow_visible_row(index: &ProgramIndex, line: usize) -> Option<usize> {
     index.visible_index(source)
 }
 
+/// How the stock block is painted behind the toolpath.
+///
+/// The choice is presentation only: it never changes the parser, analysis,
+/// simulation, or the stock model.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StockFill {
+    /// Translucent box, so the toolpath stays visible through the material.
+    #[default]
+    Ghost,
+    /// Opaque material sides and top, so removed material reads immediately.
+    Solid,
+    /// Hide the uncut block faces and keep only the cut heightfield surface.
+    CutOnly,
+}
+
+impl StockFill {
+    /// Every selectable mode, in selector order.
+    pub const ALL: [Self; 3] = [Self::Ghost, Self::Solid, Self::CutOnly];
+
+    /// Display label for chips, the setup sheet, and status text.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Ghost => "GHOST",
+            Self::Solid => "SOLID",
+            Self::CutOnly => "CUT ONLY",
+        }
+    }
+
+    /// Stable config key.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Ghost => "ghost",
+            Self::Solid => "solid",
+            Self::CutOnly => "cut_only",
+        }
+    }
+
+    /// Parses a config key or display label, case-insensitively.
+    ///
+    /// Unknown text is rejected so a corrupt config never silently changes the
+    /// stock appearance.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "ghost" => Some(Self::Ghost),
+            "solid" => Some(Self::Solid),
+            "cut only" | "cut-only" | "cut_only" | "cutonly" => Some(Self::CutOnly),
+            _ => None,
+        }
+    }
+
+    /// Cycles to the next mode in [`Self::ALL`] order.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Ghost => Self::Solid,
+            Self::Solid => Self::CutOnly,
+            Self::CutOnly => Self::Ghost,
+        }
+    }
+
+    /// Deterministic paint choices for this mode.
+    #[must_use]
+    pub(crate) const fn render(self) -> StockRender {
+        match self {
+            Self::Ghost => StockRender {
+                box_faces: true,
+                top_cap: true,
+                box_alpha: 0.10,
+                outline_alpha: 0.42,
+                panel_alpha: 0.35,
+            },
+            Self::Solid => StockRender {
+                box_faces: true,
+                top_cap: true,
+                box_alpha: 0.96,
+                outline_alpha: 0.90,
+                panel_alpha: 0.96,
+            },
+            Self::CutOnly => StockRender {
+                box_faces: false,
+                top_cap: false,
+                box_alpha: 0.0,
+                outline_alpha: 0.0,
+                panel_alpha: 0.0,
+            },
+        }
+    }
+}
+
+/// Paint decisions for one [`StockFill`] mode.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct StockRender {
+    /// Paint the outer 3D box faces.
+    pub box_faces: bool,
+    /// Paint the flat uncut top cap under the cut surface.
+    pub top_cap: bool,
+    /// Alpha of one 3D box face fill.
+    pub box_alpha: f32,
+    /// Alpha of one 3D box face outline.
+    pub outline_alpha: f32,
+    /// Alpha of the 2D stock panel.
+    pub panel_alpha: f32,
+}
+
 /// Which overlays and stock layers SIMULATE draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SimToggles {
@@ -382,16 +489,28 @@ impl Default for SimToggles {
 pub struct ToolChip {
     /// Tool number.
     pub tool: u32,
-    /// `T3 dia 6 comment L4`-style label, using the product diameter glyph.
+    /// Full `T3 (6 mm) FLAT comment L4`-style label, using the product
+    /// diameter glyph. Includes the compact shape label when a cutter exists.
     pub text: String,
+    /// The pre-shape `T3 (6 mm) comment L4` label for a width-constrained bar.
+    pub compact_text: String,
+    /// Compact shape label such as `FLAT`, `DRILL 118 degrees`, or
+    /// `SHAPE? (FLAT)`.
+    ///
+    /// `None` when there is no cutter or the cutter is a centerline trace, so
+    /// no shape is invented.
+    pub shape: Option<String>,
     /// `true` while the active diameter is assumed or a centerline trace.
     pub assumed: bool,
+    /// `true` while the cutter shape is unknown and treated as a flat cylinder.
+    pub shape_assumed: bool,
 }
 
-/// Builds the tool-chip label and assumption flag.
+/// Builds the tool-chip label and assumption flags.
 ///
 /// The comment suffix appears only when the diameter came from a program
-/// comment. A missing or assumed diameter renders as a question mark.
+/// comment. A missing or assumed diameter renders as a question mark. The
+/// shape label follows the diameter, before the comment provenance.
 #[must_use]
 pub fn tool_chip(tool: u32, entry: Option<&Tool>, cutter: Option<&Cutter>) -> ToolChip {
     let assumed = cutter.is_some_and(|cutter| cutter.assumed || cutter.is_centerline());
@@ -409,16 +528,65 @@ pub fn tool_chip(tool: u32, entry: Option<&Tool>, cutter: Option<&Cutter>) -> To
     } else {
         diameter.map_or_else(|| "?".to_string(), format_diameter)
     };
-    let mut text = format!("T{tool} \u{00b7} \u{00d8}{diameter_text}");
+    let shape = cutter.and_then(cutter_shape_label);
+    let shape_assumed = cutter.is_some_and(Cutter::is_shape_assumed);
+    let mut compact_text = format!("T{tool} \u{00b7} \u{00d8}{diameter_text}");
+    let mut text = compact_text.clone();
+    if let Some(shape) = &shape {
+        text.push_str(&format!(" \u{00b7} {shape}"));
+    }
     if let Some(line) = comment_line
         && !assumed
     {
-        text.push_str(&format!(" \u{00b7} comment L{line}"));
+        let suffix = format!(" \u{00b7} comment L{line}");
+        compact_text.push_str(&suffix);
+        text.push_str(&suffix);
     }
     ToolChip {
         tool,
         text,
+        compact_text,
+        shape,
         assumed,
+        shape_assumed,
+    }
+}
+
+/// Compact chip label for one cutter shape.
+///
+/// A centerline trace has no known shape, so it returns `None` instead of
+/// inventing one. Unknown shapes are labeled `SHAPE? (FLAT)` because the
+/// material-removal sweep treats them as flat cylinders.
+fn cutter_shape_label(cutter: &Cutter) -> Option<String> {
+    if cutter.is_centerline() {
+        return None;
+    }
+    let label = match cutter.shape {
+        ToolShape::Unknown => "SHAPE? (FLAT)".to_string(),
+        ToolShape::Flat => "FLAT".to_string(),
+        ToolShape::Ball => "BALL".to_string(),
+        ToolShape::Bull => "BULL".to_string(),
+        ToolShape::Drill => {
+            format!("DRILL {}", conical_angle_text(cutter.tip_angle_deg, 118.0))
+        }
+        ToolShape::VBit => {
+            format!("VBIT {}", conical_angle_text(cutter.tip_angle_deg, 90.0))
+        }
+    };
+    Some(label)
+}
+
+/// Formats a conical tip angle with the shape-specific fallback.
+fn conical_angle_text(tip_angle_deg: Option<f64>, fallback_deg: f64) -> String {
+    let angle = tip_angle_deg
+        .filter(|angle| angle.is_finite() && *angle > 0.0 && *angle < 180.0)
+        .unwrap_or(fallback_deg);
+    let text = format!("{angle:.1}");
+    let trimmed = text.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() {
+        fallback_deg.to_string()
+    } else {
+        format!("{trimmed}\u{00b0}")
     }
 }
 
@@ -845,12 +1013,22 @@ mod tests {
     fn tool_chip_uses_resolved_diameter_and_comment_source() {
         let mut tool = Tool::new(3);
         tool.diameter_mm = Some(6.0);
+        tool.shape = ToolShape::Flat;
         tool.sources
             .insert(ToolField::Diameter, FieldSource::Comment { line: 4 });
         let cutter = Cutter::from_tool(&tool, None);
         let chip = tool_chip(3, Some(&tool), Some(&cutter));
-        assert_eq!(chip.text, "T3 \u{00b7} \u{00d8}6 \u{00b7} comment L4");
+        assert_eq!(
+            chip.text,
+            "T3 \u{00b7} \u{00d8}6 \u{00b7} FLAT \u{00b7} comment L4"
+        );
+        assert_eq!(
+            chip.compact_text,
+            "T3 \u{00b7} \u{00d8}6 \u{00b7} comment L4"
+        );
+        assert_eq!(chip.shape.as_deref(), Some("FLAT"));
         assert!(!chip.assumed);
+        assert!(!chip.shape_assumed);
     }
 
     #[test]
@@ -859,12 +1037,126 @@ mod tests {
         let cutter = Cutter::from_tool(&tool, None);
         let chip = tool_chip(7, Some(&tool), Some(&cutter));
         assert_eq!(chip.text, "T7 \u{00b7} \u{00d8}?");
+        assert!(chip.shape.is_none());
         assert!(chip.assumed);
+        assert!(chip.shape_assumed);
         let centerline = tool_chip(7, None, Some(&Cutter::centerline()));
+        assert_eq!(centerline.text, "T7 \u{00b7} \u{00d8}?");
+        assert!(centerline.shape.is_none());
         assert!(centerline.assumed);
+        assert!(centerline.shape_assumed);
         assert_eq!(format_diameter(6.0), "6");
         assert_eq!(format_diameter(6.35), "6.35");
         assert_eq!(format_diameter(0.0), "?");
+    }
+
+    #[test]
+    fn tool_chip_shape_labels_cover_every_shape_and_fallback() {
+        let cases = [
+            (ToolShape::Flat, None, "FLAT"),
+            (ToolShape::Drill, Some(135.0), "DRILL 135\u{00b0}"),
+            (ToolShape::Drill, None, "DRILL 118\u{00b0}"),
+            (ToolShape::Drill, Some(180.0), "DRILL 118\u{00b0}"),
+            (ToolShape::Drill, Some(f64::NAN), "DRILL 118\u{00b0}"),
+            (ToolShape::VBit, None, "VBIT 90\u{00b0}"),
+            (ToolShape::VBit, Some(60.0), "VBIT 60\u{00b0}"),
+            (ToolShape::Ball, None, "BALL"),
+            (ToolShape::Bull, None, "BULL"),
+            (ToolShape::Unknown, None, "SHAPE? (FLAT)"),
+        ];
+        for (shape, tip_angle_deg, expected) in cases {
+            let mut tool = Tool::new(1);
+            tool.diameter_mm = Some(6.0);
+            tool.shape = shape;
+            tool.tip_angle_deg = tip_angle_deg;
+            let cutter = Cutter::from_tool(&tool, None);
+            let chip = tool_chip(1, Some(&tool), Some(&cutter));
+            assert_eq!(
+                chip.shape.as_deref(),
+                Some(expected),
+                "{shape:?} angle {tip_angle_deg:?}"
+            );
+            assert_eq!(
+                chip.text,
+                format!("T1 \u{00b7} \u{00d8}6 \u{00b7} {expected}")
+            );
+            assert_eq!(chip.compact_text, "T1 \u{00b7} \u{00d8}6");
+            assert_eq!(
+                chip.shape_assumed,
+                shape == ToolShape::Unknown,
+                "{shape:?} shape_assumed"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_chip_keeps_comment_provenance_with_the_shape() {
+        let mut tool = Tool::new(5);
+        tool.diameter_mm = Some(2.5);
+        tool.shape = ToolShape::Drill;
+        tool.sources
+            .insert(ToolField::Diameter, FieldSource::Comment { line: 6 });
+        let cutter = Cutter::from_tool(&tool, None);
+        let chip = tool_chip(5, Some(&tool), Some(&cutter));
+        assert_eq!(
+            chip.text,
+            "T5 \u{00b7} \u{00d8}2.5 \u{00b7} DRILL 118\u{00b0} \u{00b7} comment L6"
+        );
+        assert_eq!(
+            chip.compact_text,
+            "T5 \u{00b7} \u{00d8}2.5 \u{00b7} comment L6"
+        );
+        assert!(!chip.assumed);
+        assert!(!chip.shape_assumed);
+
+        let mut unknown = Tool::new(2);
+        unknown.diameter_mm = Some(3.175);
+        unknown.shape = ToolShape::Unknown;
+        unknown
+            .sources
+            .insert(ToolField::Diameter, FieldSource::Comment { line: 11 });
+        let cutter = Cutter::from_tool(&unknown, None);
+        let chip = tool_chip(2, Some(&unknown), Some(&cutter));
+        assert_eq!(
+            chip.text,
+            "T2 \u{00b7} \u{00d8}3.17 \u{00b7} SHAPE? (FLAT) \u{00b7} comment L11"
+        );
+        assert!(chip.shape_assumed);
+        assert!(!chip.assumed);
+    }
+
+    #[test]
+    fn latchbase_t5_chip_names_the_drill_and_fallback_angle() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/real/makera-latchbase/source.nc");
+        let file = crate::file_browser::read_program(&fixture).expect("fixture reads");
+        let parser = nc_gcode::ParserConfig::default().with_dialect(nc_core::Dialect::Makera);
+        let program = nc_gcode::parse_program_lossy(&file.source, &parser).program;
+        let tools = nc_core::ToolTable::resolve(&nc_core::ToolTable::new(), &program.tool_hints);
+        let tool = tools.get(5).expect("T5 tool hint");
+        let cutter = Cutter::from_tool(tool, None);
+        let chip = tool_chip(5, Some(tool), Some(&cutter));
+        assert_eq!(
+            chip.text,
+            "T5 \u{00b7} \u{00d8}2.5 \u{00b7} DRILL 118\u{00b0} \u{00b7} comment L6"
+        );
+        assert_eq!(chip.shape.as_deref(), Some("DRILL 118\u{00b0}"));
+        assert!(!chip.shape_assumed);
+    }
+
+    #[test]
+    fn tool_chip_omits_shape_without_a_cutter_or_on_a_centerline() {
+        let no_cutter = tool_chip(7, None, None);
+        assert_eq!(no_cutter.text, "T7 \u{00b7} \u{00d8}?");
+        assert!(no_cutter.shape.is_none());
+        assert!(!no_cutter.assumed);
+        assert!(!no_cutter.shape_assumed);
+
+        let centerline = tool_chip(7, None, Some(&Cutter::centerline()));
+        assert_eq!(centerline.text, "T7 \u{00b7} \u{00d8}?");
+        assert!(centerline.shape.is_none());
+        assert!(centerline.assumed);
+        assert!(centerline.shape_assumed);
     }
 
     #[test]
@@ -883,6 +1175,67 @@ mod tests {
         assert!(toggles.future_path);
         assert!(toggles.tool);
         assert!(toggles.warnings);
+    }
+
+    #[test]
+    fn stock_fill_labels_and_keys_round_trip() {
+        for mode in StockFill::ALL {
+            assert_eq!(StockFill::parse(mode.label()), Some(mode));
+            assert_eq!(StockFill::parse(mode.key()), Some(mode));
+            assert_eq!(
+                StockFill::parse(&mode.label().to_ascii_lowercase()),
+                Some(mode)
+            );
+            assert!(!mode.label().contains('%'));
+            assert!(!mode.label().contains("SAFE"));
+        }
+        assert_eq!(StockFill::parse(" cut_only "), Some(StockFill::CutOnly));
+        assert_eq!(StockFill::parse("cut-only"), Some(StockFill::CutOnly));
+        assert_eq!(StockFill::parse("Cut Only"), Some(StockFill::CutOnly));
+        assert_eq!(StockFill::parse(""), None);
+        assert_eq!(StockFill::parse("glass"), None);
+        assert_eq!(StockFill::parse("10%"), None);
+        assert_eq!(StockFill::parse("safe"), None);
+    }
+
+    #[test]
+    fn stock_fill_cycles_in_selector_order() {
+        assert_eq!(
+            StockFill::ALL,
+            [StockFill::Ghost, StockFill::Solid, StockFill::CutOnly]
+        );
+        assert_eq!(StockFill::Ghost.next(), StockFill::Solid);
+        assert_eq!(StockFill::Solid.next(), StockFill::CutOnly);
+        assert_eq!(StockFill::CutOnly.next(), StockFill::Ghost);
+        assert_eq!(StockFill::default(), StockFill::Ghost);
+    }
+
+    #[test]
+    fn stock_fill_render_choices_are_stable_per_mode() {
+        let ghost = StockFill::Ghost.render();
+        assert!(ghost.box_faces);
+        assert!(ghost.top_cap);
+        assert!((ghost.box_alpha - 0.10).abs() < f32::EPSILON);
+        assert!((ghost.outline_alpha - 0.42).abs() < f32::EPSILON);
+        assert!(ghost.panel_alpha > 0.0);
+
+        let solid = StockFill::Solid.render();
+        assert!(solid.box_faces);
+        assert!(solid.top_cap);
+        assert!(solid.box_alpha > 0.9, "solid stock must read as material");
+        assert!(solid.panel_alpha > 0.9);
+
+        let cut_only = StockFill::CutOnly.render();
+        assert!(!cut_only.box_faces);
+        assert!(!cut_only.top_cap);
+        assert_eq!(cut_only.box_alpha, 0.0);
+        assert_eq!(cut_only.outline_alpha, 0.0);
+        assert_eq!(cut_only.panel_alpha, 0.0);
+
+        for mode in StockFill::ALL {
+            assert_eq!(mode.render(), mode.render());
+        }
+        assert!(StockFill::Solid.render().box_alpha > StockFill::Ghost.render().box_alpha);
     }
 
     #[test]

@@ -372,6 +372,26 @@ pub struct ParserConfig {
 `Vec<u32>`; `ParseErrorKind` adds `FileTooLarge` and `key()`; `WarningKind`
 adds `CutterCompNotApplied`, `AmbiguousToolHint`, and `MissingFeed`.
 
+### Dialect detection
+
+```rust
+pub struct DialectEvidence {
+    pub line: usize,          // 1-based
+    pub marker: &'static str, // stable: "M851", "makera-header", ...
+    pub text: String,         // trimmed source line, max 120 bytes
+}
+pub struct DialectDetection { pub dialect: Dialect, pub evidence: DialectEvidence }
+
+pub fn detect_dialect(source: &str) -> Option<DialectDetection>;
+```
+
+`None` means no recognized vendor evidence; the caller keeps Generic and sets
+its assumed flag. Strong code markers (`M851`/`M852` outside comments) win over
+header comments. Header text markers are only read before the first motion.
+Conflicting text-marker dialects return `None`, never a guess. Detection is
+evidence for the UI, not a parser semantic: callers still pass the chosen
+`Dialect` to `ParserConfig`.
+
 ### Tool hints
 
 `ToolHint` is defined in `nc-core` to avoid a dependency cycle and re-exported

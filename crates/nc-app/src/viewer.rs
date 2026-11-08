@@ -33,7 +33,7 @@ use nc_viewer::{
     RenderPlan, StockBox, Toolpath, Viewport,
 };
 
-use crate::sim::{PathPhase, SimCanvas};
+use crate::sim::{PathPhase, SimCanvas, StockFill};
 use crate::theme::{Palette, cut_depth_color, move_color, stock_depth_color};
 
 /// Screen-space padding around the fitted toolpath, in logical pixels.
@@ -367,7 +367,8 @@ pub trait HasViewer {
 ///
 /// `program` is the parsed program; `None` draws the deterministic synthetic
 /// preview. `stock` is the display box inferred by `nc-stock` or entered by
-/// the operator. `marker` is the tool position at the program start. The
+/// the operator. `stock_fill` selects the ghost, solid, or cut-only material
+/// rendering. `marker` is the tool position at the program start. The
 /// `visibility` array gates exactly one semantic [`MoveKind`] per slot.
 /// `overlay` carries analysis warning/error lines and the current highlight.
 #[allow(clippy::too_many_arguments)]
@@ -376,6 +377,7 @@ pub fn view<T: HasViewer + 'static>(
     palette: Palette,
     program: Option<Arc<Program>>,
     stock: Option<StockBox>,
+    stock_fill: StockFill,
     marker: Option<Point3>,
     visibility: [bool; MoveKind::ALL.len()],
     preview: bool,
@@ -397,6 +399,7 @@ pub fn view<T: HasViewer + 'static>(
                     &paint_handle,
                     program.clone(),
                     stock,
+                    stock_fill,
                     marker,
                     visibility,
                     preview,
@@ -1058,6 +1061,7 @@ fn paint(
     handle: &ViewerHandle,
     program: Option<Arc<Program>>,
     stock: Option<StockBox>,
+    stock_fill: StockFill,
     marker: Option<Point3>,
     visibility: [bool; MoveKind::ALL.len()],
     preview: bool,
@@ -1081,12 +1085,12 @@ fn paint(
         let camera3d = viewer.camera3d;
         paint_ground_grid_3d(&camera3d, viewer.path_bounds3, bounds, palette, window);
         if stock_on && let Some(stock) = stock {
-            paint_stock_3d(&camera3d, &stock, bounds, palette, window);
+            paint_stock_3d(&camera3d, &stock, bounds, stock_fill, palette, window);
         }
         if let Some(sim) = &sim
             && stock_on
         {
-            paint_heightfield_3d(&camera3d, bounds, sim, palette, window);
+            paint_heightfield_3d(&camera3d, bounds, sim, stock_fill, palette, window);
         }
         if !viewer.path_bounds3.is_empty() {
             paint_envelope_3d(&camera3d, viewer.path_bounds3, bounds, palette, window);
@@ -1124,7 +1128,7 @@ fn paint(
     if let Some(sim) = &sim
         && stock_on
     {
-        paint_sim_stock_2d(&camera, bounds, sim, palette, window);
+        paint_sim_stock_2d(&camera, bounds, sim, stock_fill, palette, window);
     }
     if let Some(sim) = &sim {
         paint_sim_path(
@@ -1630,14 +1634,24 @@ fn paint_ground_grid_3d(
     paint_path(axes, palette.border_strong.alpha(0.9), window);
 }
 
-/// Paints the stock box as translucent faces.
+/// Paints the stock box faces according to the selected fill mode.
+///
+/// GHOST keeps the translucent box the viewer always had. SOLID paints the
+/// faces in a neutral stock-material shade so a cut pocket reads against the
+/// uncut block. CUT ONLY paints no box at all and leaves the heightfield
+/// surface to [`paint_heightfield_3d`].
 fn paint_stock_3d(
     camera: &Camera3D,
     stock: &StockBox,
     bounds: Bounds<Pixels>,
+    fill: StockFill,
     palette: Palette,
     window: &mut Window,
 ) {
+    let render = fill.render();
+    if !render.box_faces {
+        return;
+    }
     let corners = stock.corners();
     let mut screen = [Point2::ZERO; 8];
     for (slot, corner) in screen.iter_mut().zip(corners) {
@@ -1647,6 +1661,7 @@ fn paint_stock_3d(
         *slot = Point2::new(x, y);
     }
 
+    let solid = matches!(fill, StockFill::Solid);
     for face in visible_stock_faces(stock, camera) {
         let mut fill_path = PathBuilder::fill();
         fill_path.move_to(point(px(screen[face[0]].x), px(screen[face[0]].y)));
@@ -1654,7 +1669,12 @@ fn paint_stock_3d(
             fill_path.line_to(point(px(screen[index].x), px(screen[index].y)));
         }
         fill_path.close();
-        paint_path(fill_path, palette.text_faint.alpha(0.10), window);
+        let fill_color = if solid {
+            stock_depth_color(stock_face_shade(face, stock), palette)
+        } else {
+            palette.text_faint
+        };
+        paint_path(fill_path, fill_color.alpha(render.box_alpha), window);
 
         let mut outline = PathBuilder::stroke(px(1.0));
         outline.move_to(point(px(screen[face[0]].x), px(screen[face[0]].y)));
@@ -1662,7 +1682,31 @@ fn paint_stock_3d(
             outline.line_to(point(px(screen[index].x), px(screen[index].y)));
         }
         outline.close();
-        paint_path(outline, palette.border_strong.alpha(0.42), window);
+        let outline_color = if solid {
+            palette.text_dim
+        } else {
+            palette.border_strong
+        };
+        paint_path(outline, outline_color.alpha(render.outline_alpha), window);
+    }
+}
+
+/// Neutral depth-ramp fraction for one box face.
+///
+/// The top face is the lightest shade; X-facing and Y-facing sides differ
+/// slightly so the solid block keeps a readable corner without using an
+/// accent or danger colour.
+fn stock_face_shade(face: [usize; 4], stock: &StockBox) -> f32 {
+    if face == [4, 5, 6, 7] {
+        return 0.0;
+    }
+    let corners = stock.corners();
+    let points = face.map(|index| corners[index]);
+    let normal = (points[1] - points[0]).cross(points[2] - points[0]);
+    if normal.x.abs() >= normal.y.abs() {
+        0.22
+    } else {
+        0.34
     }
 }
 
@@ -1735,6 +1779,7 @@ fn paint_heightfield_3d(
     camera: &Camera3D,
     bounds: Bounds<Pixels>,
     sim: &SimCanvas,
+    fill: StockFill,
     palette: Palette,
     window: &mut Window,
 ) {
@@ -1747,6 +1792,8 @@ fn paint_heightfield_3d(
     // The uncut top is one flat quad. Only cells below the top need their own
     // projected heightfield patch, which keeps the surface free of tessellation
     // seams and cuts the paint count for an untouched block to one path.
+    // CUT ONLY hides this uncut cap but still paints every cut cell below.
+    let render = fill.render();
     let stock = sim.stock;
     let top_corners = [
         Point3::new(stock.min.x, stock.min.y, stock.max.z),
@@ -1763,7 +1810,7 @@ fn paint_heightfield_3d(
         };
         *slot = Point2::new(x, y);
     }
-    if top_valid {
+    if top_valid && render.top_cap {
         let mut top = PathBuilder::fill();
         top.move_to(point(px(top_screen[0].x), px(top_screen[0].y)));
         for corner in &top_screen[1..] {
@@ -1845,6 +1892,7 @@ fn paint_sim_stock_2d(
     camera: &Camera2D,
     bounds: Bounds<Pixels>,
     sim: &SimCanvas,
+    fill: StockFill,
     palette: Palette,
     window: &mut Window,
 ) {
@@ -1859,13 +1907,20 @@ fn paint_sim_stock_2d(
     let x1 = left + max.x;
     let y0 = top + max.y;
     let y1 = top + min.y;
-    let mut panel = PathBuilder::fill();
-    panel.move_to(point(px(x0), px(y0)));
-    panel.line_to(point(px(x1), px(y0)));
-    panel.line_to(point(px(x1), px(y1)));
-    panel.line_to(point(px(x0), px(y1)));
-    panel.close();
-    paint_path(panel, stock_depth_color(0.0, palette).alpha(0.92), window);
+    let render = fill.render();
+    if render.panel_alpha > 0.0 {
+        let mut panel = PathBuilder::fill();
+        panel.move_to(point(px(x0), px(y0)));
+        panel.line_to(point(px(x1), px(y0)));
+        panel.line_to(point(px(x1), px(y1)));
+        panel.line_to(point(px(x0), px(y1)));
+        panel.close();
+        paint_path(
+            panel,
+            stock_depth_color(0.0, palette).alpha(render.panel_alpha),
+            window,
+        );
+    }
 
     let resolution = mesh.resolution;
     if resolution == 0 {
@@ -2892,6 +2947,26 @@ mod tests {
         let faces = visible_stock_faces(&stock, &camera);
         assert_eq!(faces.len(), 3);
         assert!(faces.iter().all(|face| face.iter().all(|index| *index < 8)));
+    }
+
+    #[test]
+    fn solid_stock_face_shades_are_neutral_and_stable() {
+        let stock = StockBox::from_xy(100.0, 60.0, 0.0, 20.0).expect("stock");
+        let faces = stock.faces();
+        assert_eq!(stock_face_shade(faces[1], &stock), 0.0, "top is lightest");
+        for face in [faces[2], faces[3], faces[4], faces[5]] {
+            let shade = stock_face_shade(face, &stock);
+            assert!(
+                (0.01..=1.0).contains(&shade),
+                "side shade {shade} is outside the neutral ramp"
+            );
+            assert_eq!(stock_face_shade(face, &stock), shade);
+        }
+        assert_ne!(
+            stock_face_shade(faces[2], &stock),
+            stock_face_shade(faces[3], &stock),
+            "adjacent sides must differ for a readable corner"
+        );
     }
 
     #[test]

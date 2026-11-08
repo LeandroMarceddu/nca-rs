@@ -33,6 +33,7 @@ use gpui_kit::{
     open_window, point, px, size,
 };
 
+pub use sim::StockFill;
 pub use state::{AppMode, LoadedProgram, NcaConfig, NcaState, ParseState};
 pub use theme::ThemeMode;
 

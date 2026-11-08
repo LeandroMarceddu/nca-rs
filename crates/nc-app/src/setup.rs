@@ -19,7 +19,7 @@ use nc_analysis::{AnalysisConfig, Report, RuleId, RuleSettings, Severity, StockC
 use nc_core::{
     Dialect, FieldSource, MachineConfig, MaterialPreset, Tool, ToolField, ToolShape, ToolTable,
 };
-use nc_gcode::Program;
+use nc_gcode::{DialectDetection, DialectEvidence, Program, detect_dialect};
 use nc_sim::SimConfig;
 use nc_stock::{InferenceBasis, StockModel};
 use sha2::{Digest, Sha256};
@@ -208,7 +208,15 @@ pub struct SetupState {
     pub analysis: AnalysisConfig,
     /// Selected parser and analysis dialect.
     pub dialect: Dialect,
-    /// `true` while Generic is the default and no dialect was chosen.
+    /// `true` while the dialect is detected from the current source.
+    ///
+    /// AUTO is the default. A manual selection clears it until the operator
+    /// chooses AUTO again.
+    pub dialect_auto: bool,
+    /// Evidence for the current AUTO detection, when a marker was found.
+    pub dialect_evidence: Option<DialectEvidence>,
+    /// `true` while Generic is assumed: no vendor marker, or an explicit
+    /// Generic selection.
     pub dialect_assumed: bool,
     /// Simulation settings.
     pub sim: SimConfig,
@@ -243,6 +251,8 @@ impl Default for SetupState {
         Self {
             analysis: AnalysisConfig::default(),
             dialect: Dialect::Generic,
+            dialect_auto: true,
+            dialect_evidence: None,
             dialect_assumed: true,
             sim: SimConfig::default(),
             config_name: None,
@@ -272,6 +282,10 @@ impl SetupState {
         self.analysis = analysis;
         self.dialect = loaded.dialect;
         self.dialect_assumed = loaded.dialect_assumed;
+        // An omitted [parse] dialect returns to AUTO; the caller detects
+        // against the current source. An explicit dialect is a manual choice.
+        self.dialect_auto = loaded.dialect_assumed;
+        self.dialect_evidence = None;
         if let Some(rapid) = self
             .analysis
             .machine
@@ -594,11 +608,133 @@ impl SetupState {
         self.bump();
     }
 
-    /// Selects a dialect. Any explicit choice clears the assumed flag.
+    /// Selects a concrete dialect and disables AUTO.
+    ///
+    /// The manual choice clears the detection evidence. An explicit Generic
+    /// selection is labeled assumed, because Generic is the conservative
+    /// least-common-denominator fallback rather than a vendor match.
     pub fn set_dialect(&mut self, dialect: Dialect) {
         self.dialect = dialect;
-        self.dialect_assumed = false;
+        self.dialect_auto = false;
+        self.dialect_evidence = None;
+        self.dialect_assumed = matches!(dialect, Dialect::Generic);
         self.bump();
+    }
+
+    /// Enables AUTO and clears the previous detection until the caller applies
+    /// a fresh result from the current source.
+    pub fn set_dialect_auto(&mut self) {
+        self.dialect = Dialect::Generic;
+        self.dialect_auto = true;
+        self.dialect_evidence = None;
+        self.dialect_assumed = true;
+        self.bump();
+    }
+
+    /// Applies a detector result while AUTO is enabled.
+    ///
+    /// A manual selection is never overwritten: the call is a no-op and returns
+    /// `false` when [`Self::dialect_auto`] is `false`. Returns `true` when the
+    /// effective dialect, assumed flag, or evidence changed.
+    pub fn apply_dialect_detection(&mut self, detection: Option<DialectDetection>) -> bool {
+        if !self.dialect_auto {
+            return false;
+        }
+        let (dialect, assumed, evidence) = match detection {
+            Some(detection) => (detection.dialect, false, Some(detection.evidence)),
+            None => (Dialect::Generic, true, None),
+        };
+        let changed = self.dialect != dialect
+            || self.dialect_assumed != assumed
+            || self.dialect_evidence.as_ref() != evidence.as_ref();
+        self.dialect = dialect;
+        self.dialect_assumed = assumed;
+        self.dialect_evidence = evidence;
+        if changed {
+            self.bump();
+        }
+        changed
+    }
+
+    /// Detects the dialect of `source` while AUTO is enabled.
+    ///
+    /// Returns `true` when the effective dialect, assumed flag, or evidence
+    /// changed. A manual choice is left untouched.
+    pub fn detect_source_dialect(&mut self, source: &str) -> bool {
+        if !self.dialect_auto {
+            return false;
+        }
+        self.apply_dialect_detection(detect_dialect(source))
+    }
+
+    /// Status-chip label for the current dialect choice.
+    ///
+    /// AUTO with evidence reads `<DIALECT> DETECTED`; AUTO without evidence
+    /// reads `GENERIC ASSUMED`; any manual choice reads `DIALECT: <DIALECT>`.
+    #[must_use]
+    pub fn dialect_status_label(&self) -> String {
+        if self.dialect_auto {
+            if self.dialect_assumed {
+                "GENERIC ASSUMED".to_string()
+            } else {
+                format!("{} DETECTED", self.dialect.label().to_uppercase())
+            }
+        } else {
+            format!("DIALECT: {}", self.dialect.label().to_uppercase())
+        }
+    }
+
+    /// One-line evidence summary shown under the AUTO selector.
+    ///
+    /// Empty when a manual dialect is selected.
+    #[must_use]
+    pub fn dialect_auto_label(&self) -> String {
+        if !self.dialect_auto {
+            return String::new();
+        }
+        match &self.dialect_evidence {
+            Some(evidence) => format!(
+                "AUTO \u{00b7} {} \u{00b7} line {} \u{00b7} {}",
+                self.dialect.label().to_uppercase(),
+                evidence.line,
+                evidence_detail(evidence),
+            ),
+            None => "AUTO \u{00b7} no vendor marker; GENERIC assumed".to_string(),
+        }
+    }
+
+    /// Tooltip explaining the current dialect choice.
+    #[must_use]
+    pub fn dialect_status_tip(&self) -> String {
+        if self.dialect_assumed {
+            if self.dialect_auto {
+                "AUTO found no vendor marker in this source, so parsing and analysis use \
+                 Generic semantics and label the choice assumed."
+                    .to_string()
+            } else {
+                "The setup sheet selected Generic semantics explicitly; the choice is labeled \
+                 assumed."
+                    .to_string()
+            }
+        } else if self.dialect_auto {
+            match &self.dialect_evidence {
+                Some(evidence) => format!(
+                    "AUTO detected the {} dialect from source line {} ({}).",
+                    self.dialect.label(),
+                    evidence.line,
+                    evidence.marker
+                ),
+                None => format!(
+                    "AUTO detected the {} dialect from this source.",
+                    self.dialect.label()
+                ),
+            }
+        } else {
+            format!(
+                "The setup sheet selected the {} dialect for parsing and analysis.",
+                self.dialect.label()
+            )
+        }
     }
 
     /// Settings for one rule, always at least the defaults.
@@ -690,6 +826,18 @@ impl SetupState {
 
     fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+    }
+}
+
+/// Evidence text suitable for the AUTO line, without repeating the marker.
+fn evidence_detail(evidence: &DialectEvidence) -> String {
+    let text = evidence.text.trim();
+    if text.is_empty() {
+        evidence.marker.to_string()
+    } else if text.starts_with(evidence.marker) {
+        text.to_string()
+    } else {
+        format!("{}: {text}", evidence.marker)
     }
 }
 
@@ -1261,6 +1409,8 @@ clearance_mm = 1.5
 
         assert_eq!(setup.dialect, Dialect::Grbl);
         assert!(!setup.dialect_assumed);
+        assert!(!setup.dialect_auto);
+        assert!(setup.dialect_evidence.is_none());
         assert_eq!(setup.stock_label(), "STOCK: SET");
         assert_eq!(
             setup.analysis.stock,
@@ -1309,7 +1459,9 @@ clearance_mm = 1.5
         let mut setup = SetupState::default();
         setup.apply_loaded(loaded);
         assert_eq!(setup.dialect, Dialect::Generic);
+        assert!(setup.dialect_auto);
         assert!(setup.dialect_assumed);
+        assert!(setup.dialect_evidence.is_none());
         assert!(setup.analysis.stock.is_none());
         assert_eq!(setup.stock_label(), "STOCK: INFERRED");
         let inferred = StockModel::explicit([0.0, 0.0, -10.0], [50.0, 40.0, 0.0]).expect("stock");
@@ -1329,6 +1481,8 @@ clearance_mm = 1.5
         setup.set_dialect(Dialect::Makera);
         assert_eq!(setup.dialect, Dialect::Makera);
         assert!(!setup.dialect_assumed);
+        assert!(!setup.dialect_auto);
+        assert!(setup.dialect_evidence.is_none());
 
         let choice = crate::analysis_worker::DialectChoice {
             dialect: setup.dialect,
@@ -1362,6 +1516,166 @@ clearance_mm = 1.5
                 .iter()
                 .any(|finding| finding.rule.as_str() == "parse.dialect_assumed"),
             "the assumed diagnostic must fire for the default Generic choice"
+        );
+    }
+
+    #[test]
+    fn auto_detects_makera_and_shows_line_and_marker() {
+        let source = "(LatchBase)\n\
+                      (Generated with Makera Community Post Process Utility)\n\
+                      G90 G21\n\
+                      M851 S100\n\
+                      G0 X0 Y0\n";
+        let mut setup = SetupState::default();
+        assert!(setup.dialect_auto);
+        assert!(setup.detect_source_dialect(source));
+        assert_eq!(setup.dialect, Dialect::Makera);
+        assert!(!setup.dialect_assumed);
+        let evidence = setup.dialect_evidence.as_ref().expect("evidence");
+        assert_eq!(evidence.line, 4);
+        assert_eq!(evidence.marker, "M851");
+        assert_eq!(
+            setup.dialect_status_label(),
+            "MAKERA DETECTED",
+            "AUTO with evidence must name the detected dialect"
+        );
+        assert_eq!(
+            setup.dialect_auto_label(),
+            "AUTO \u{00b7} MAKERA \u{00b7} line 4 \u{00b7} M851 S100"
+        );
+    }
+
+    #[test]
+    fn auto_generic_source_falls_back_to_assumed_generic() {
+        let mut setup = SetupState::default();
+        assert!(!setup.detect_source_dialect("G21 G90\nG0 X0 Y0\nG1 X10 F100\n"));
+        assert_eq!(setup.dialect, Dialect::Generic);
+        assert!(setup.dialect_assumed);
+        assert!(setup.dialect_evidence.is_none());
+        assert_eq!(setup.dialect_status_label(), "GENERIC ASSUMED");
+        assert_eq!(
+            setup.dialect_auto_label(),
+            "AUTO \u{00b7} no vendor marker; GENERIC assumed"
+        );
+    }
+
+    #[test]
+    fn manual_dialect_is_not_overwritten_by_later_detection() {
+        let mut setup = SetupState::default();
+        setup.set_dialect(Dialect::Grbl);
+        assert!(!setup.dialect_auto);
+        assert!(!setup.dialect_assumed);
+        assert!(setup.dialect_evidence.is_none());
+        assert!(!setup.detect_source_dialect("(vendor: Makera)\nM851 S100\n"));
+        assert_eq!(setup.dialect, Dialect::Grbl);
+        assert!(!setup.dialect_auto);
+        assert!(setup.dialect_evidence.is_none());
+        assert_eq!(setup.dialect_status_label(), "DIALECT: GRBL");
+    }
+
+    #[test]
+    fn auto_reselect_redetects_and_returns_to_assumed_for_generic() {
+        let mut setup = SetupState::default();
+        setup.detect_source_dialect("(vendor: Makera)\nG0 X0\n");
+        assert_eq!(setup.dialect, Dialect::Makera);
+        setup.set_dialect_auto();
+        assert!(setup.dialect_auto);
+        assert!(setup.dialect_assumed);
+        assert!(setup.dialect_evidence.is_none());
+        setup.detect_source_dialect("G21 G90\nG0 X0\n");
+        assert_eq!(setup.dialect, Dialect::Generic);
+        assert!(setup.dialect_assumed);
+        assert_eq!(setup.dialect_status_label(), "GENERIC ASSUMED");
+    }
+
+    #[test]
+    fn config_dialect_selects_manual_or_auto() {
+        let explicit = parse_config("[parse]\ndialect = \"makera\"\n").expect("config");
+        let mut setup = SetupState::default();
+        setup.apply_loaded(explicit);
+        assert!(!setup.dialect_auto);
+        assert_eq!(setup.dialect, Dialect::Makera);
+        assert!(!setup.dialect_assumed);
+        assert_eq!(setup.dialect_status_label(), "DIALECT: MAKERA");
+
+        let omitted = parse_config("[parse]\n").expect("config");
+        let mut setup = SetupState::default();
+        setup.apply_loaded(omitted);
+        assert!(setup.dialect_auto);
+        assert_eq!(setup.dialect, Dialect::Generic);
+        assert!(setup.dialect_assumed);
+        setup.detect_source_dialect("(vendor: Makera)\nG0 X0\n");
+        assert_eq!(setup.dialect, Dialect::Makera);
+        assert!(!setup.dialect_assumed);
+    }
+
+    #[test]
+    fn conflicting_header_stays_generic_assumed() {
+        let source = "(vendor: Makera)\n(vendor: GRBL)\nG0 X0\n";
+        assert!(
+            detect_dialect(source).is_none(),
+            "the detector must reject an ambiguous header"
+        );
+        let mut setup = SetupState::default();
+        setup.detect_source_dialect(source);
+        assert_eq!(setup.dialect, Dialect::Generic);
+        assert!(setup.dialect_assumed);
+        assert!(setup.dialect_evidence.is_none());
+        assert_eq!(setup.dialect_status_label(), "GENERIC ASSUMED");
+    }
+
+    #[test]
+    fn explicit_generic_is_assumed_and_status_strings_are_stable() {
+        let mut setup = SetupState::default();
+        assert_eq!(setup.dialect_status_label(), "GENERIC ASSUMED");
+        setup.detect_source_dialect("(vendor: Makera)\nG0 X0\n");
+        assert_eq!(setup.dialect_status_label(), "MAKERA DETECTED");
+        setup.set_dialect(Dialect::Makera);
+        assert_eq!(setup.dialect_status_label(), "DIALECT: MAKERA");
+        setup.set_dialect(Dialect::Generic);
+        assert!(setup.dialect_assumed);
+        assert_eq!(setup.dialect_status_label(), "DIALECT: GENERIC");
+        setup.set_dialect(Dialect::Grbl);
+        assert_eq!(setup.dialect_status_label(), "DIALECT: GRBL");
+    }
+
+    #[test]
+    fn auto_dialect_reaches_analysis_with_the_correct_assumed_flag() {
+        let registry = RuleRegistry::from_rules(nc_analysis::rules::all());
+
+        let makera_source = "(vendor: Makera)\nM851 S100\nG0 X0\n";
+        let mut setup = SetupState::default();
+        setup.detect_source_dialect(makera_source);
+        let config = setup.analysis_config(ToolTable::new());
+        let parser = nc_gcode::ParserConfig::default().with_dialect(setup.dialect);
+        let program = nc_gcode::parse_program_with(makera_source, &parser).expect("makera source");
+        let request = AnalysisRequest::new("part.nc", makera_source, &config, setup.dialect)
+            .with_dialect_assumed(setup.dialect_assumed);
+        let report = analyze(&program, &request, &registry);
+        assert_eq!(report.input.dialect, Dialect::Makera);
+        assert!(
+            !report
+                .diagnostics
+                .iter()
+                .any(|finding| finding.rule.as_str() == "parse.dialect_assumed"),
+            "a detected dialect must not be reported as assumed"
+        );
+
+        let generic_source = "G21 G90\nG0 X0\n";
+        setup.set_dialect_auto();
+        setup.detect_source_dialect(generic_source);
+        let config = setup.analysis_config(ToolTable::new());
+        let program = parse_program(generic_source).expect("generic source");
+        let request = AnalysisRequest::new("part.nc", generic_source, &config, setup.dialect)
+            .with_dialect_assumed(setup.dialect_assumed);
+        let report = analyze(&program, &request, &registry);
+        assert_eq!(report.input.dialect, Dialect::Generic);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|finding| finding.rule.as_str() == "parse.dialect_assumed"),
+            "the Generic fallback must be reported as assumed"
         );
     }
 

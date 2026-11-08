@@ -50,11 +50,11 @@ use crate::setup::{
 };
 use crate::sim::{
     FrameClock, HeightfieldCache, HeightfieldMesh, PlaybackSpeed, SegmentLines, SimCanvas,
-    SimToggles, ToolChip, Transport, follow_visible_row, format_diameter, format_time,
+    SimToggles, StockFill, ToolChip, Transport, follow_visible_row, format_diameter, format_time,
     fraction_for_time, is_long_seek, parse_tool_edit, time_for_fraction, tool_chip,
 };
 use crate::sim_worker::SeekWorker;
-use crate::state::{AppMode, LoadedProgram, NcaConfig, NcaState, ParseState};
+use crate::state::{AppMode, DialectLoad, LoadedProgram, NcaConfig, NcaState, ParseState};
 use crate::theme::{Palette, ThemeMode, apply as apply_theme, move_color, move_style};
 use crate::viewer::{self, HasViewer, ViewerHandle, ViewerMode, ViewerOverlay};
 
@@ -1292,7 +1292,10 @@ impl NcaShell {
             return ToolChip {
                 tool: 0,
                 text: "NO TOOL".to_string(),
+                compact_text: "NO TOOL".to_string(),
+                shape: None,
                 assumed: false,
+                shape_assumed: false,
             };
         };
         let tool = program
@@ -1307,7 +1310,10 @@ impl NcaShell {
             return ToolChip {
                 tool: 0,
                 text: "NO TOOL".to_string(),
+                compact_text: "NO TOOL".to_string(),
+                shape: None,
                 assumed: false,
+                shape_assumed: false,
             };
         }
         let tools = self.resolved_tools();
@@ -1427,8 +1433,11 @@ impl NcaShell {
         match read_program(&path) {
             Ok(file) => {
                 self.program_generation = self.program_generation.wrapping_add(1);
-                let dialect = self.state.setup.dialect;
-                self.state.adopt(LoadedProgram::from_file(file, dialect));
+                let auto = self.state.setup.dialect_auto;
+                let manual = self.state.setup.dialect;
+                let load = DialectLoad::from_file(file, auto, manual);
+                let loaded = self.adopt_loaded_with_dialect(load);
+                self.state.adopt(loaded);
                 self.pending_setup_sync = true;
                 self.program_scroll.scroll_to_item(0, ScrollStrategy::Top);
                 self.viewer.fit();
@@ -1444,24 +1453,22 @@ impl NcaShell {
         self.state.loading = true;
         cx.notify();
         let task_path = path.clone();
-        let dialect = self.state.setup.dialect;
+        let auto = self.state.setup.dialect_auto;
+        let manual = self.state.setup.dialect;
         self._load_task = Some(cx.spawn(async move |weak, cx| {
-            let task_dialect = dialect;
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     match read_program(&task_path) {
-                        Ok(file) => Ok(LoadedProgram::from_file(file, task_dialect)),
+                        Ok(file) => Ok(DialectLoad::from_file(file, auto, manual)),
                         Err(error) => Err(error.to_string()),
                     }
                 })
                 .await;
             let _ = weak.update(cx, |shell, cx| {
                 match result {
-                    Ok(mut loaded) => {
-                        if shell.state.setup.dialect != dialect {
-                            loaded.reparse(shell.state.setup.dialect);
-                        }
+                    Ok(load) => {
+                        let loaded = shell.adopt_loaded_with_dialect(load);
                         shell.program_generation = shell.program_generation.wrapping_add(1);
                         shell.state.adopt(loaded);
                         shell.program_scroll.scroll_to_item(0, ScrollStrategy::Top);
@@ -1572,6 +1579,19 @@ impl NcaShell {
     fn set_theme(&mut self, mode: ThemeMode, cx: &mut Context<Self>) {
         self.state.config.set_theme(mode);
         apply_theme(mode, cx);
+        cx.notify();
+    }
+
+    /// Cycles the stock fill chip in SIMULATE.
+    fn cycle_stock_fill(&mut self, cx: &mut Context<Self>) {
+        let next = self.state.stock_fill().next();
+        self.state.set_stock_fill(next);
+        cx.notify();
+    }
+
+    /// Selects one stock fill mode from the setup sheet.
+    fn set_stock_fill(&mut self, fill: StockFill, cx: &mut Context<Self>) {
+        self.state.set_stock_fill(fill);
         cx.notify();
     }
 
@@ -2123,9 +2143,12 @@ impl NcaShell {
             Some(_) => "explicit stock",
             None => "inferred stock",
         };
-        let dialect = loaded.dialect;
-        let assumed = loaded.dialect_assumed;
         let tools = self.state.setup.apply_loaded(loaded);
+        // An omitted [parse] dialect returns to AUTO and detects against the
+        // current source; an explicit dialect stays a manual choice.
+        self.detect_current_dialect();
+        let dialect = self.state.setup.dialect;
+        let assumed = self.state.setup.dialect_assumed;
         if let Some(hash) = self.state.loaded_hash().map(str::to_string) {
             self.state.config.set_tools_for(&hash, tools);
         }
@@ -2155,6 +2178,30 @@ impl NcaShell {
         self.program_changed(cx);
     }
 
+    /// Adopts a loaded file without overriding a manual choice made while the
+    /// background read was running.
+    ///
+    /// When AUTO is active the detector result is applied and the file is
+    /// reparsed only if the effective dialect differs from the parse dialect.
+    fn adopt_loaded_with_dialect(&mut self, mut load: DialectLoad) -> LoadedProgram {
+        if self.state.setup.dialect_auto {
+            self.state
+                .setup
+                .apply_dialect_detection(load.detection.take());
+            if self.state.setup.dialect != load.dialect {
+                load.loaded.reparse(self.state.setup.dialect);
+            }
+        } else if self.state.setup.dialect != load.dialect {
+            load.loaded.reparse(self.state.setup.dialect);
+        }
+        load.loaded
+    }
+
+    /// Re-detects the current source while AUTO is enabled.
+    fn detect_current_dialect(&mut self) {
+        self.state.detect_current_dialect();
+    }
+
     /// Selects a dialect and re-parses, re-analyzes, and rebuilds simulation.
     fn set_dialect_action(
         &mut self,
@@ -2162,11 +2209,24 @@ impl NcaShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.state.setup.dialect == dialect && !self.state.setup.dialect_assumed {
+        if !self.state.setup.dialect_auto
+            && self.state.setup.dialect == dialect
+            && !self.state.setup.dialect_assumed
+        {
             return;
         }
         self.state.setup.set_dialect(dialect);
         self.reparse_current(dialect, cx);
+        self.sync_setup_inputs(window, cx);
+        self.begin_analysis(cx);
+    }
+
+    /// Enables AUTO, re-detects the current source, and re-parses and
+    /// re-analyzes with the result.
+    fn set_dialect_auto_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.setup.set_dialect_auto();
+        self.detect_current_dialect();
+        self.reparse_current(self.state.setup.dialect, cx);
         self.sync_setup_inputs(window, cx);
         self.begin_analysis(cx);
     }
@@ -2329,6 +2389,7 @@ impl NcaShell {
     /// The clickable tool chip shared by the top bar and the SIMULATE HUD.
     fn tool_chip_button(&self, id: &'static str, p: Palette, view: Entity<Self>) -> AnyElement {
         let info = self.current_tool_chip();
+        let tip = info.text.clone();
         div()
             .id(id)
             .h(px(TOUCH_TARGET))
@@ -2346,10 +2407,11 @@ impl NcaShell {
             .text_color(if info.assumed { p.warning } else { p.text })
             .cursor_pointer()
             .hover(|style| style.bg(p.raised_hover))
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .on_click(move |_, window, cx| {
                 view.update(cx, |shell, cx| shell.open_tool_popover(window, cx));
             })
-            .child(info.text)
+            .child(info.compact_text)
             .into_any_element()
     }
 
@@ -2635,8 +2697,20 @@ impl NcaShell {
             .into_any_element()
     }
 
-    fn tool_chip_compact(&self, id: &'static str, p: Palette, view: Entity<Self>) -> AnyElement {
+    fn tool_chip_compact(
+        &self,
+        id: &'static str,
+        p: Palette,
+        view: Entity<Self>,
+        include_shape: bool,
+    ) -> AnyElement {
         let info = self.current_tool_chip();
+        let text = if include_shape {
+            info.text.clone()
+        } else {
+            info.compact_text.clone()
+        };
+        let emphasized = info.assumed || (include_shape && info.shape_assumed);
         div()
             .id(id)
             .h(px(26.0))
@@ -2647,17 +2721,17 @@ impl NcaShell {
             .px_2()
             .rounded(px(6.0))
             .border_1()
-            .border_color(if info.assumed { p.warning } else { p.border })
+            .border_color(if emphasized { p.warning } else { p.border })
             .bg(p.panel_alt)
             .text_size(px(9.0))
             .font_weight(FontWeight::BOLD)
-            .text_color(if info.assumed { p.warning } else { p.text })
+            .text_color(if emphasized { p.warning } else { p.text })
             .cursor_pointer()
             .hover(|style| style.bg(p.raised_hover))
             .on_click(move |_, window, cx| {
                 view.update(cx, |shell, cx| shell.open_tool_popover(window, cx));
             })
-            .child(info.text)
+            .child(text)
             .into_any_element()
     }
 
@@ -2785,6 +2859,8 @@ impl NcaShell {
             );
 
         let mut toggles = h_flex().items_center().gap_1();
+        let stock_fill = self.state.stock_fill();
+        let stock_fill_label = format!("STOCK: {}", stock_fill.label());
         toggles = toggles
             .child(compact_toggle(
                 "sim-toggle-stock",
@@ -2799,6 +2875,23 @@ impl NcaShell {
                     cx.notify();
                 },
             ))
+            .child(
+                compact_toggle(
+                    "sim-stock-fill",
+                    &stock_fill_label,
+                    stock_fill != StockFill::Ghost,
+                    p,
+                    view.clone(),
+                    move |shell, _, cx| shell.cycle_stock_fill(cx),
+                )
+                .tooltip(|window, cx| {
+                    Tooltip::new(
+                        "Cycle stock fill: GHOST shows the toolpath through the block, \
+                         SOLID reads as material, CUT ONLY hides the uncut block.",
+                    )
+                    .build(window, cx)
+                }),
+            )
             .child(compact_toggle(
                 "sim-toggle-rapids",
                 "RAPIDS",
@@ -2867,7 +2960,7 @@ impl NcaShell {
             .gap_2()
             .child(slider)
             .child(toggles)
-            .child(self.tool_chip_compact("sim-tool-chip", p, view));
+            .child(self.tool_chip_compact("sim-tool-chip", p, view, false));
 
         v_flex()
             .h(px(TRANSPORT_HEIGHT))
@@ -2999,19 +3092,13 @@ impl NcaShell {
             .border_color(p.border_strong)
             .bg(p.panel.alpha(0.94))
             .child(
-                h_flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(9.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(p.text_dim)
-                            .child("SIMULATION"),
-                    )
-                    .child(div().flex_1())
-                    .child(self.tool_chip_compact("hud-tool-chip", p, view)),
+                div()
+                    .text_size(px(9.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(p.text_dim)
+                    .child("SIMULATION"),
             )
+            .child(self.tool_chip_compact("hud-tool-chip", p, view, true))
             .child(badges)
             .child(rows)
             .into_any_element()
@@ -3311,24 +3398,8 @@ impl NcaShell {
                 .id("status-stock")
                 .tooltip(move |window, cx| Tooltip::new(stock_tip.clone()).build(window, cx)),
         );
-        let dialect_label = if self.state.setup.dialect_assumed {
-            "GENERIC ASSUMED".to_string()
-        } else {
-            format!(
-                "DIALECT: {}",
-                self.state.setup.dialect.label().to_uppercase()
-            )
-        };
-        let dialect_tip = if self.state.setup.dialect_assumed {
-            "No dialect is configured, so parsing and analysis use Generic semantics and \
-             label the choice assumed."
-                .to_string()
-        } else {
-            format!(
-                "The setup sheet selected the {} dialect for parsing and analysis.",
-                self.state.setup.dialect.label()
-            )
-        };
+        let dialect_label = self.state.setup.dialect_status_label();
+        let dialect_tip = self.state.setup.dialect_status_tip();
         strip = strip.child(
             chip(&dialect_label, p)
                 .id("status-dialect")
@@ -4268,6 +4339,7 @@ impl NcaShell {
             p,
             program,
             stock,
+            self.state.stock_fill(),
             marker,
             visibility,
             preview,
@@ -5310,25 +5382,25 @@ impl NcaShell {
     }
 
     fn setup_dialect_section(&self, p: Palette, view: Entity<Self>) -> Div {
+        let status = self.state.setup.dialect_status_label();
         let section = self.setup_section(
             "DIALECT",
-            vec![
-                chip(
-                    if self.state.setup.dialect_assumed {
-                        "GENERIC ASSUMED"
-                    } else {
-                        "EXPLICIT"
-                    },
-                    p,
-                ),
-                chip("REPARSES THE PROGRAM", p),
-            ],
+            vec![chip(&status, p), chip("REPARSES THE PROGRAM", p)],
             false,
             p,
         );
         let mut buttons = h_flex().gap_1().flex_wrap();
+        let auto_active = self.state.setup.dialect_auto;
+        buttons = buttons.child(sheet_toggle(
+            "setup-dialect-auto".to_string(),
+            "AUTO".to_string(),
+            auto_active,
+            p,
+            view.clone(),
+            move |shell, window, cx| shell.set_dialect_auto_action(window, cx),
+        ));
         for dialect in Dialect::ALL {
-            let active = self.state.setup.dialect == dialect;
+            let active = !self.state.setup.dialect_auto && self.state.setup.dialect == dialect;
             buttons = buttons.child(sheet_toggle(
                 format!("setup-dialect-{}", dialect.label()),
                 dialect.label().to_uppercase(),
@@ -5338,7 +5410,24 @@ impl NcaShell {
                 move |shell, window, cx| shell.set_dialect_action(dialect, window, cx),
             ));
         }
-        section.child(buttons)
+        let mut section = section.child(buttons);
+        if self.state.setup.dialect_auto {
+            let evidence = self.state.setup.dialect_auto_label();
+            let color = if self.state.setup.dialect_assumed {
+                p.warning
+            } else {
+                p.info
+            };
+            section = section.child(
+                div()
+                    .id("setup-dialect-auto-evidence")
+                    .text_size(px(8.5))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(color)
+                    .child(evidence),
+            );
+        }
+        section
     }
 
     fn setup_simulation_section(&self, p: Palette, view: Entity<Self>) -> Div {
@@ -5552,6 +5641,20 @@ impl NcaShell {
             ));
         }
 
+        let mut stock_fill_row = h_flex().gap_1().items_center();
+        let current_fill = self.state.stock_fill();
+        for fill in StockFill::ALL {
+            stock_fill_row = stock_fill_row.child(sheet_toggle(
+                format!("setup-stock-fill-{}", fill.key()),
+                fill.label().to_string(),
+                current_fill == fill,
+                p,
+                view.clone(),
+                move |shell, _, cx| shell.set_stock_fill(fill, cx),
+            ));
+        }
+        let dialect_status = self.state.setup.dialect_status_label();
+
         let mut config_section = self.setup_section(
             "CONFIG",
             vec![
@@ -5619,7 +5722,24 @@ impl NcaShell {
                     v_flex()
                         .gap_2()
                         .child(section_label("APPEARANCE", p))
-                        .child(theme_row),
+                        .child(theme_row)
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_size(px(8.5))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(p.text_faint)
+                                        .child("STOCK FILL"),
+                                )
+                                .child(stock_fill_row),
+                        )
+                        .child(div().text_size(px(8.5)).text_color(p.text_faint).child(
+                            "GHOST keeps the toolpath visible through the block. SOLID reads \
+                             as material so removed volume is obvious. CUT ONLY hides the uncut \
+                             block and keeps the cut surface.",
+                        )),
                 )
                 .child(div().text_size(px(8.5)).text_color(p.text_faint).child(
                     "Never writes G-code or connects to a controller. Every edit is local.",
@@ -5656,17 +5776,7 @@ impl NcaShell {
                             .child(section_label("SETUP", p))
                             .child(chip("LOCAL ONLY", p))
                             .child(chip(self.state.stock_label(), p))
-                            .child(chip(
-                                &if self.state.setup.dialect_assumed {
-                                    "GENERIC ASSUMED".to_string()
-                                } else {
-                                    format!(
-                                        "DIALECT: {}",
-                                        self.state.setup.dialect.label().to_uppercase()
-                                    )
-                                },
-                                p,
-                            ))
+                            .child(chip(&dialect_status, p))
                             .child(div().flex_1())
                             .child(action_button(
                                 "settings-close",

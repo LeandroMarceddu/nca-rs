@@ -3788,7 +3788,7 @@ dependencies = [
 
 [[package]]
 name = "nc-analysis"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "nc-core",
  "nc-gcode",
@@ -3803,7 +3803,7 @@ dependencies = [
 
 [[package]]
 name = "nc-app"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "crossbeam-channel",
  "gpui-kit",
@@ -3823,7 +3823,7 @@ dependencies = [
 
 [[package]]
 name = "nc-cli"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "nc-analysis",
  "nc-core",
@@ -3838,7 +3838,7 @@ dependencies = [
 
 [[package]]
 name = "nc-core"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "libm",
  "serde",
@@ -3847,7 +3847,7 @@ dependencies = [
 
 [[package]]
 name = "nc-fixtures"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "nc-analysis",
  "nc-core",
@@ -3861,7 +3861,7 @@ dependencies = [
 
 [[package]]
 name = "nc-gcode"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "nc-core",
  "nc-viewer",
@@ -3873,7 +3873,7 @@ dependencies = [
 
 [[package]]
 name = "nc-sim"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "nc-core",
  "nc-gcode",
@@ -3886,7 +3886,7 @@ dependencies = [
 
 [[package]]
 name = "nc-stock"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "nc-core",
  "nc-gcode",
@@ -3898,7 +3898,7 @@ dependencies = [
 
 [[package]]
 name = "nc-viewer"
-version = "0.1.0"
+version = "0.5.0"
 
 [[package]]
 name = "ndk-sys"

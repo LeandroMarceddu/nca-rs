@@ -44,6 +44,9 @@ The timeline stores spans, not copies of motions.
 - The cutter is applied between consecutive tick poses as a swept capsule, so a
   fast move leaves no gap. Arcs and helixes are subdivided along the exact curve
   with chord error at most `cell_mm / 4`.
+- Shaped cutters evaluate their profile in the moving-tool frame
+  (`cell - (from + d*t)`): Drill and V-bit cones, Ball spheres, Bull flat tip
+  plus torus. Flat and centerline cutters are unaffected.
 - Drills lower the hole to the tip depth and honor peck retracts.
 
 ## Grid and cutter
@@ -55,7 +58,8 @@ The timeline stores spans, not copies of motions.
 - A known tool uses its resolved diameter and shape. An unknown diameter uses
   `SimConfig::assumed_tool_diameter_mm`; the default `None` is a centerline
   trace one cell wide.
-- An unknown shape is a flat cylinder, labeled.
+- An unknown shape is a flat cylinder, labeled `SHAPE? (FLAT)` in the
+  simulation HUD.
 - There is never a zero-diameter cutter.
 
 ## Stock

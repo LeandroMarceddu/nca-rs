@@ -603,8 +603,10 @@ impl Heightmap {
                     from_mm[2] + dz * t
                 } else {
                     let evaluate = |t: f64| {
-                        let px = fx + dx * t;
-                        let py = fy + dy * t;
+                        // The tool centre at `t` is `from + d * t`, so the
+                        // radial vector is `centre - from - d * t`.
+                        let px = fx - dx * t;
+                        let py = fy - dy * t;
                         let r = math::sqrt(px * px + py * py).min(radius);
                         from_mm[2] + dz * t + profile_offset(cutter, radius, r)
                     };
@@ -1034,6 +1036,138 @@ mod tests {
         let edge = -2.0 + 3.0 / nc_core::math::tan(nc_core::math::to_radians(59.0));
         assert!((map.get(12, 9).unwrap_or(0.0) - edge as f32).abs() < 1.0e-5);
         assert_eq!(map.get(13, 9), Some(0.0));
+    }
+
+    #[test]
+    fn horizontal_drill_sweep_matches_the_cone() {
+        // d2.5, 118 deg, tip at Z=-1 sweeping along X at Y=10.5. The 59 deg
+        // cone rises 1/tan(59 deg) per mm of radial distance.
+        let mut map = test_map(20, 20, 1.0);
+        let cutter = shaped(ToolShape::Drill, 2.5, 118.0);
+        assert!(map.cut_segment(&cutter, [0.5, 10.5, -1.0], [19.5, 10.5, -1.0]));
+        let centre = map.get(10, 10).expect("cell");
+        assert!((centre - (-1.0)).abs() < 1.0e-4, "centreline {centre}");
+        let expected = -1.0 + 1.0 / nc_core::math::tan(nc_core::math::to_radians(59.0));
+        let off_axis = f64::from(map.get(10, 11).expect("cell"));
+        assert!(
+            (off_axis - expected).abs() < 1.0e-4,
+            "1 mm off-axis {off_axis} vs {expected}"
+        );
+        assert_eq!(map.get(10, 12), Some(0.0));
+    }
+
+    #[test]
+    fn horizontal_vbit_sweep_matches_the_cone() {
+        // d3.175, 90 deg, tip at Z=-2: the cone rises 1 mm per mm.
+        let mut map = test_map(20, 20, 1.0);
+        let cutter = shaped(ToolShape::VBit, 3.175, 90.0);
+        assert!(map.cut_segment(&cutter, [0.5, 10.5, -2.0], [19.5, 10.5, -2.0]));
+        let centre = map.get(10, 10).expect("cell");
+        assert!((centre - (-2.0)).abs() < 1.0e-4, "centreline {centre}");
+        let off_axis = map.get(10, 11).expect("cell");
+        assert!(
+            (off_axis - (-1.0)).abs() < 1.0e-4,
+            "1 mm off-axis {off_axis}"
+        );
+        assert_eq!(map.get(10, 12), Some(0.0));
+    }
+
+    #[test]
+    fn angled_vbit_sweep_cuts_symmetrically_about_the_centreline() {
+        // A 45 deg sweep must not favour either side of the path. Cells
+        // (11, 9) and (9, 11) are both sqrt(2) mm from the line y = x.
+        let mut map = test_map(20, 20, 1.0);
+        let cutter = shaped(ToolShape::VBit, 3.175, 90.0);
+        assert!(map.cut_segment(&cutter, [0.5, 0.5, -2.0], [19.5, 19.5, -2.0]));
+        let centre = map.get(10, 10).expect("cell");
+        assert!((centre - (-2.0)).abs() < 1.0e-4, "centreline {centre}");
+        let left = f64::from(map.get(11, 9).expect("cell"));
+        let right = f64::from(map.get(9, 11).expect("cell"));
+        assert!((left - right).abs() < 1.0e-6, "{left} vs {right}");
+        let expected = -2.0 + nc_core::math::sqrt(2.0);
+        assert!(
+            (left - expected).abs() < 1.0e-4,
+            "off-axis {left} vs {expected}"
+        );
+    }
+
+    #[test]
+    fn horizontal_ball_sweep_keeps_the_sphere_profile() {
+        let mut map = test_map(20, 20, 1.0);
+        assert!(map.cut_segment(&ball(6.0), [0.5, 10.5, -1.0], [19.5, 10.5, -1.0]));
+        let centre = map.get(10, 10).expect("cell");
+        assert!((centre - (-1.0)).abs() < 1.0e-4, "centreline {centre}");
+        let expected = -1.0 + 3.0 - nc_core::math::sqrt(8.0);
+        let off_axis = f64::from(map.get(10, 11).expect("cell"));
+        assert!(
+            (off_axis - expected).abs() < 1.0e-4,
+            "1 mm off-axis {off_axis} vs {expected}"
+        );
+        assert_eq!(map.get(10, 13), Some(0.0));
+    }
+
+    #[test]
+    fn horizontal_bull_sweep_keeps_the_flat_tip() {
+        let mut map = test_map(20, 20, 1.0);
+        assert!(map.cut_segment(&bull(6.0, 2.0), [0.5, 10.5, -1.0], [19.5, 10.5, -1.0]));
+        assert_eq!(map.get(10, 10), Some(-1.0));
+        assert_eq!(map.get(10, 11), Some(-1.0));
+        let expected = -1.0 + 2.0 - nc_core::math::sqrt(3.0);
+        let torus = f64::from(map.get(10, 12).expect("cell"));
+        assert!(
+            (torus - expected).abs() < 1.0e-4,
+            "2 mm off-axis {torus} vs {expected}"
+        );
+        assert_eq!(map.get(10, 13), Some(0.0));
+    }
+
+    #[test]
+    fn shaped_arc_sweep_cuts_the_centrepath() {
+        // Full circle of radius 10 around (20.5, 20.5). Cell (26, 28) has an
+        // offset of (6, 8) from the centre, so it sits exactly on the path at
+        // 53.13 deg, between chord samples. A 90 deg V-bit at Z=-2 must cut it
+        // to roughly the tip depth (only the chord sagitta remains).
+        let mut map = test_map(45, 45, 1.0);
+        let arc = ArcRecord {
+            center_mm: [20.5, 20.5, 0.0],
+            radius_mm: 10.0,
+            end_radius_mm: 10.0,
+            start_angle_rad: 0.0,
+            sweep_rad: nc_core::math::TAU,
+            axial_delta_mm: 0.0,
+            format: ArcFormat::Center,
+        };
+        let cutter = shaped(ToolShape::VBit, 3.175, 90.0);
+        assert!(map.cut_arc(
+            &cutter,
+            &arc,
+            [30.5, 20.5, -2.0],
+            [30.5, 20.5, -2.0],
+            Plane::Xy,
+            0.25,
+        ));
+        let on_path = map.get(26, 28).expect("cell");
+        assert!(on_path <= -1.7, "centreline cell {on_path}");
+        assert_eq!(map.get(20, 20), Some(0.0));
+    }
+
+    #[test]
+    fn repeated_shaped_sweeps_hash_identically() {
+        let run = || {
+            let mut map = test_map(20, 20, 1.0);
+            assert!(map.cut_segment(
+                &shaped(ToolShape::Drill, 2.5, 118.0),
+                [0.5, 10.5, -1.0],
+                [19.5, 10.5, -1.0],
+            ));
+            assert!(map.cut_segment(
+                &shaped(ToolShape::VBit, 3.175, 90.0),
+                [10.5, 0.5, -2.0],
+                [10.5, 19.5, -2.0],
+            ));
+            map.content_hash()
+        };
+        assert_eq!(run(), run());
     }
 
     #[test]

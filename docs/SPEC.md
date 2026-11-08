@@ -1058,6 +1058,10 @@ Use `nc-stock`'s 2.5D z-map, not a separate simulation:
   bounds, legend, diagnostics.
 - `SIMULATE` mode: same canvas, stock cutting, tool pose, transport bar,
   traversed/future path, cut-depth legend.
+- Stock appearance: `GHOST`, `SOLID`, or `CUT ONLY` fill. VIEW defaults to
+  GHOST so the path stays visible; SIMULATE defaults to SOLID so removed
+  material is obvious. An explicit choice persists. Appearance never changes
+  analysis, simulation state, or coverage.
 - Program list: virtualized, line numbers, source text, severity gutter;
   click a diagnostic to highlight the line and zoom to its segments.
 - Diagnostics panel: severity/category/rule filters, search, counts; details
@@ -1068,7 +1072,10 @@ Use `nc-stock`'s 2.5D z-map, not a separate simulation:
   (e.g. `tool.diameter:T3`) and give each group a "set value" shortcut that
   opens the right field and lists the rules it would unlock.
 - Tool chip (top bar and simulation HUD): shows `T3 · Ø6 · comment L4` or
-  `T3 · Ø?`. Tapping it opens a quick popover to set the diameter (and
+  `T3 · Ø?`. The simulation HUD also shows the effective shape and conical tip
+  angle (`FLAT`, `BALL`, `BULL`, `DRILL 118°`, `VBIT 90°`); an unknown shape is
+  labeled `SHAPE? (FLAT)`. The top bar stays compact and shows the full label
+  on hover. Tapping it opens a quick popover to set the diameter (and
   optionally shape/flutes) for that tool without opening the full sheet.
 - Tool inventory: built automatically from the program (every T number used,
   in order of first use, with move counts). Values from comments are prefilled
@@ -1078,7 +1085,8 @@ Use `nc-stock`'s 2.5D z-map, not a separate simulation:
 - Setup sheet: stock (inferred/explicit, origin/size/top), tools (the
   inventory above: diameter,
   shape, flutes, stickout, flute length, shank/holder diameter, handedness),
-  material preset, machine travel/limits and `spindle_manual`, dialect,
+  material preset, machine travel/limits and `spindle_manual`, dialect
+  selector with AUTO plus a manual override and the detection evidence line,
   simulation grid/rapid rate/crash preview, rule thresholds.
 - Export: JSON report and Markdown summary. HTML is a plus.
 - Parse/analyze/simulate off the UI thread; show progress and allow cancel.

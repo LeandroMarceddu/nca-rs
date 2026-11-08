@@ -1736,13 +1736,13 @@ fn contains_word(text: &str, word: &str) -> bool {
 fn contains_phrase(text: &str, phrase: &str) -> bool {
     text.contains(phrase)
 }
-struct SourceLines<'a> {
+pub(crate) struct SourceLines<'a> {
     rest: &'a str,
     done: bool,
 }
 
 impl<'a> SourceLines<'a> {
-    fn new(text: &'a str) -> Self {
+    pub(crate) fn new(text: &'a str) -> Self {
         Self {
             rest: text,
             done: text.is_empty(),

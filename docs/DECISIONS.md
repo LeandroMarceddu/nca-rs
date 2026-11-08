@@ -375,3 +375,42 @@ consequence for the contract.
 - **Reason:** The original vertical mapping felt inverted in use.
 - **Consequence:** A viewer test pins the sign so a later camera refactor cannot
   silently restore the old direction.
+
+## D039 - Stock fill is a display mode, not a safety control
+
+- **Decision:** The app offers `GHOST`, `SOLID`, and `CUT ONLY` stock fill.
+  VIEW defaults to GHOST and SIMULATE to SOLID; an explicit choice persists in
+  `app.json` and applies to both modes. SOLID uses neutral stock colors, and
+  the cut heightfield keeps its depth shading in every mode.
+- **Reason:** The hard-coded 10% translucent box made material removal hard to
+  read in SIMULATE. A viewer needs a ghost box to see the path, while a
+  simulator needs a solid block to show what was removed.
+- **Consequence:** Appearance only. It does not change analysis, simulation
+  state, report bytes, or coverage, and it adds no safety verdict.
+
+## D040 - AUTO dialect detection is evidence, not a guess
+
+- **Decision:** The app defaults to AUTO and calls
+  `nc_gcode::detect_dialect(source)`. Makera `M851`/`M852` and Makera header
+  markers select Makera; explicit grbl, LinuxCNC, Mach3, and Fanuc header
+  markers select those dialects. Conflicting markers return no detection and
+  the app shows Generic assumed. A manual dialect choice disables AUTO.
+- **Reason:** A real Makera Z1 file required a manual setup change even though
+  the file identifies its vendor and uses Makera-only codes.
+- **Consequence:** The detector only reads source text and reports a line and
+  marker; it never writes files or changes parser semantics. The CLI remains
+  explicit through `[parse] dialect`. Detection evidence is not serialized into
+  the report schema, so `RULESET_VERSION` stays `1.0.0`.
+
+## D041 - Shaped sweeps use the moving-tool frame
+
+- **Decision:** `cut_shaped_segment` evaluates the cutter profile at
+  `cell - (from + d*t)`, not `cell - from + d*t`. The corrected frame applies to
+  Drill, V-bit, Ball, and Bull sweeps; flat and centerline paths are unchanged.
+- **Reason:** The old sign mirrored a moving shaped cutter about the segment
+  start. Vertical plunges were unaffected, so the existing zero-length tests
+  passed while horizontal drill/V-bit cuts were wrong.
+- **Consequence:** Horizontal and angled shaped cuts now match their analytic
+  cone/sphere/torus profiles. Shaped arcs remain chord capsules with the
+  documented sagitta approximation. The V in the LatchBase fixture is the T5
+  118-degree drill, not a flat-endmill artifact; T1 floors are flat.

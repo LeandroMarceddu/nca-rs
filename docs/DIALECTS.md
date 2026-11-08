@@ -66,10 +66,29 @@ Sources checked 2026-11-08:
 - grblHAL additional G/M codes (for the existing `grbl` profile):
   <https://github.com/grblHAL/core/wiki/Additional-G--and-M-codes>
 
+## Automatic detection
+
+The app's setup sheet defaults to `AUTO` and calls
+`nc_gcode::detect_dialect(source)` on load. Detection is evidence-based:
+
+- `M851`/`M852` outside comments selects `makera`.
+- Header comments with `makera`, `carvera`, `model: z1`, or
+  `community post process utility` select `makera`.
+- Header comments naming `grbl`/`grblhal`, `linuxcnc`, `mach3`/`mach4`, or
+  `fanuc` select that dialect.
+- `M400` alone is not Makera evidence; it is shared by several controls.
+- Conflicting header markers return no detection. The app then keeps `Generic`
+  with the assumed chip, rather than guessing.
+
+The app shows the detected dialect and the evidence line, and a manual choice
+overrides AUTO. The CLI remains explicit: `[parse] dialect` selects the
+dialect; `generic` with an omitted key is assumed.
+
 ## Default dialect
 
-`ParseConfig::dialect` defaults to `Generic`, and the parser emits one Info
-`parse.dialect_assumed` finding per file. A configured dialect suppresses it.
+The parser's `ParseConfig::dialect` defaults to `Generic`, and the parser emits
+one Info `parse.dialect_assumed` finding per file. A configured dialect
+suppresses it.
 
 ## Tool comment conventions
 
