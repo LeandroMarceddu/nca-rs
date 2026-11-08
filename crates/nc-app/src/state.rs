@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use nc_gcode::{ParseError, Program, parse_program};
 use nc_stock::{InferenceBasis, StockModel, StockSource};
-use nc_viewer::{MoveKind, SegmentKind};
+use nc_viewer::MoveKind;
 use serde::{Deserialize, Serialize};
 
 use crate::file_browser::{ProgramFile, RecentFiles};
@@ -536,37 +536,13 @@ impl NcaState {
             .count()
     }
 
-    /// Whether a display segment group should be painted.
+    /// Visibility flags indexed by [`MoveKind`].
     ///
-    /// The parser still emits the five display [`SegmentKind`]s, so a group is
-    /// painted when any semantic kind it can represent is enabled. This keeps
-    /// the legend honest while the upstream taxonomy migration is pending.
+    /// The canvas painter gates exactly this kind: hiding `ArcCw` never hides
+    /// `ArcCcw`, `HelixCw`, or any other kind.
     #[must_use]
-    pub fn segment_visible(&self, kind: SegmentKind) -> bool {
-        match kind {
-            SegmentKind::Rapid => {
-                self.kind_visible(MoveKind::Rapid) || self.kind_visible(MoveKind::Retract)
-            }
-            SegmentKind::Feed => [
-                MoveKind::Feed,
-                MoveKind::Ramp,
-                MoveKind::Drill,
-                MoveKind::Peck,
-                MoveKind::Bore,
-            ]
-            .into_iter()
-            .any(|kind| self.kind_visible(kind)),
-            SegmentKind::Plunge => self.kind_visible(MoveKind::Plunge),
-            SegmentKind::Arc => [
-                MoveKind::ArcCw,
-                MoveKind::ArcCcw,
-                MoveKind::HelixCw,
-                MoveKind::HelixCcw,
-            ]
-            .into_iter()
-            .any(|kind| self.kind_visible(kind)),
-            SegmentKind::Probe => self.kind_visible(MoveKind::Probe),
-        }
+    pub fn visibility(&self) -> [bool; MoveKind::ALL.len()] {
+        MoveKind::ALL.map(|kind| self.kind_visible(kind))
     }
 }
 
@@ -675,16 +651,41 @@ mod tests {
     }
 
     #[test]
-    fn legend_toggles_gate_display_groups() {
+    fn legend_toggles_gate_exactly_one_kind() {
         let mut state = NcaState::new(NcaConfig::default());
-        assert_eq!(state.visible_kind_count(), 13);
-        state.toggle_kind(MoveKind::Rapid);
-        assert!(!state.kind_visible(MoveKind::Rapid));
-        // Retract is still enabled, so the combined rapid display group stays.
-        assert!(state.segment_visible(SegmentKind::Rapid));
-        state.toggle_kind(MoveKind::Retract);
-        assert!(!state.segment_visible(SegmentKind::Rapid));
+        assert_eq!(state.visible_kind_count(), MoveKind::ALL.len());
+        assert!(state.visibility().into_iter().all(|visible| visible));
+
+        state.toggle_kind(MoveKind::ArcCw);
+        assert!(!state.kind_visible(MoveKind::ArcCw));
+        assert_eq!(state.visible_kind_count(), MoveKind::ALL.len() - 1);
+        let visibility = state.visibility();
+        for kind in MoveKind::ALL {
+            assert_eq!(
+                visibility[kind as usize],
+                kind != MoveKind::ArcCw,
+                "{kind:?} changed with ArcCw"
+            );
+        }
+
+        state.toggle_kind(MoveKind::ArcCw);
+        assert!(state.visibility().into_iter().all(|visible| visible));
+
+        for kind in MoveKind::ALL {
+            state.toggle_kind(kind);
+            assert!(!state.kind_visible(kind), "{kind:?}");
+            assert_eq!(state.visible_kind_count(), MoveKind::ALL.len() - 1);
+            assert!(
+                state
+                    .visibility()
+                    .into_iter()
+                    .enumerate()
+                    .all(|(index, visible)| visible == (index != kind as usize)),
+                "toggling {kind:?} changed another kind"
+            );
+            state.toggle_kind(kind);
+        }
         state.show_all_kinds();
-        assert!(state.segment_visible(SegmentKind::Arc));
+        assert!(state.visibility().into_iter().all(|visible| visible));
     }
 }

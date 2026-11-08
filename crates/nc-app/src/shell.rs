@@ -20,7 +20,7 @@ use gpui_kit::{
     UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use nc_gcode::Program;
-use nc_viewer::{MoveFamily, MoveKind, SegmentKind, StockBox};
+use nc_viewer::{MoveFamily, MoveKind, StockBox};
 
 use crate::file_browser::{
     BrowserEntry, FileBrowser, compact_path, default_root, display_path, format_size, read_program,
@@ -915,7 +915,7 @@ impl NcaShell {
             .and_then(|loaded| loaded.stock)
             .and_then(|stock| stock.to_stock_box());
         let marker = viewer::program_start_marker(program.as_deref());
-        let visibility = SegmentKind::ALL.map(|kind| self.state.segment_visible(kind));
+        let visibility = self.state.visibility();
         let mode = self.viewer.mode();
         let zoom = self.viewer.zoom_percent();
         let parse_errors = loaded.is_some_and(|loaded| !loaded.errors.is_empty());

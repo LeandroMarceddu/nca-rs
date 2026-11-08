@@ -1,7 +1,7 @@
 //! Canned cycles: simple drilling, pecks, repeats, retract modes, cancel.
 
 use nc_gcode::{ParseErrorKind, SpindleMode, parse_program};
-use nc_viewer::SegmentKind;
+use nc_viewer::MoveKind;
 
 fn close(a: f32, b: f32) -> bool {
     (a - b).abs() <= 1.0e-4
@@ -12,14 +12,14 @@ fn g81_drills_and_retracts_to_the_initial_level() {
     let program = parse_program("G0 X0 Y0 Z5\nG81 X10 Y10 Z-5 R2 F100\nG80\n").expect("valid");
     let segments = program.toolpath.segments();
     assert_eq!(segments.len(), 5);
-    assert_eq!(segments[0].kind, SegmentKind::Rapid);
-    assert_eq!(segments[1].kind, SegmentKind::Rapid);
+    assert_eq!(segments[0].kind, MoveKind::Retract);
+    assert_eq!(segments[1].kind, MoveKind::Rapid);
     assert_eq!(segments[1].end, nc_viewer::Point3::new(10.0, 10.0, 5.0));
-    assert_eq!(segments[2].kind, SegmentKind::Rapid);
+    assert_eq!(segments[2].kind, MoveKind::Rapid);
     assert_eq!(segments[2].end, nc_viewer::Point3::new(10.0, 10.0, 2.0));
-    assert_eq!(segments[3].kind, SegmentKind::Plunge);
+    assert_eq!(segments[3].kind, MoveKind::Drill);
     assert_eq!(segments[3].end, nc_viewer::Point3::new(10.0, 10.0, -5.0));
-    assert_eq!(segments[4].kind, SegmentKind::Rapid);
+    assert_eq!(segments[4].kind, MoveKind::Retract);
     assert_eq!(segments[4].end, nc_viewer::Point3::new(10.0, 10.0, 5.0));
     assert_eq!(program.stats.canned_cycles, 1);
     assert_eq!(program.state.motion, nc_gcode::MotionMode::None);
@@ -49,16 +49,16 @@ fn g83_pecks_with_full_retract() {
     let program = parse_program("G0 X0 Y0 Z0\nG83 Z-3 R-1 Q1 F100\n").expect("valid");
     let segments = program.toolpath.segments();
     assert_eq!(segments.len(), 6);
-    let kinds: Vec<SegmentKind> = segments.iter().map(|segment| segment.kind).collect();
+    let kinds: Vec<MoveKind> = segments.iter().map(|segment| segment.kind).collect();
     assert_eq!(
         kinds,
         vec![
-            SegmentKind::Rapid,
-            SegmentKind::Plunge,
-            SegmentKind::Rapid,
-            SegmentKind::Rapid,
-            SegmentKind::Plunge,
-            SegmentKind::Rapid,
+            MoveKind::Rapid,
+            MoveKind::Peck,
+            MoveKind::Retract,
+            MoveKind::Rapid,
+            MoveKind::Peck,
+            MoveKind::Retract,
         ]
     );
     assert!(close(segments[1].end.z, -2.0));
@@ -89,7 +89,7 @@ fn a_cycle_repeats_on_xy_words() {
     let segments = program.toolpath.segments();
     let holes: Vec<f32> = segments
         .iter()
-        .filter(|segment| segment.kind == SegmentKind::Plunge)
+        .filter(|segment| segment.kind == MoveKind::Drill)
         .map(|segment| segment.end.x)
         .collect();
     assert_eq!(holes, vec![0.0, 10.0, 10.0]);
@@ -177,7 +177,7 @@ fn g86_stops_the_spindle_at_the_bottom() {
 #[test]
 fn g85_feeds_back_out() {
     let program = parse_program("G0 Z5\nG85 Z-2 R1 F100\n").expect("valid");
-    let kinds: Vec<SegmentKind> = program
+    let kinds: Vec<MoveKind> = program
         .toolpath
         .segments()
         .iter()
@@ -186,11 +186,11 @@ fn g85_feeds_back_out() {
     assert_eq!(
         kinds,
         vec![
-            SegmentKind::Rapid,
-            SegmentKind::Rapid,
-            SegmentKind::Plunge,
-            SegmentKind::Feed,
-            SegmentKind::Rapid,
+            MoveKind::Retract,
+            MoveKind::Rapid,
+            MoveKind::Bore,
+            MoveKind::Bore,
+            MoveKind::Retract,
         ]
     );
 }
@@ -202,7 +202,7 @@ fn incremental_cycle_parameters_are_relative_to_the_cycle_planes() {
     let segments = program.toolpath.segments();
     let plunge = segments
         .iter()
-        .find(|segment| segment.kind == SegmentKind::Plunge)
+        .find(|segment| segment.kind == MoveKind::Drill)
         .expect("plunge");
     assert!(close(plunge.end.z, -2.0));
 }

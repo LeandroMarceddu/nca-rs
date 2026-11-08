@@ -237,6 +237,12 @@ impl Arc {
         self.sweep
     }
 
+    /// Returns `true` when the stored sweep runs clockwise in the plane.
+    #[must_use]
+    pub const fn is_clockwise(&self) -> bool {
+        self.clockwise
+    }
+
     /// End angle in radians. This is `start_angle + sweep`, not re-wrapped.
     #[must_use]
     pub fn end_angle(&self) -> f32 {

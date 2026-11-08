@@ -6,7 +6,7 @@
 //! emits the prepared moves.
 
 use nc_core::{Axis, Position, Wcs, math};
-use nc_viewer::SegmentKind;
+use nc_viewer::MoveKind;
 
 use crate::block::{Block, GCode, GWord, MCode, Value};
 use crate::config::{MIN_ARC_RADIUS_MM, ParserConfig};
@@ -65,16 +65,16 @@ pub(crate) enum PlannedMove {
     Line {
         /// Target in program coordinates, millimetres.
         to_work: [f64; 3],
-        /// Motion style.
-        kind: SegmentKind,
+        /// Exact semantic motion kind.
+        kind: MoveKind,
     },
     /// Straight move whose target is an absolute machine coordinate (`G53`,
     /// `G28`, `G30`).
     MachineLine {
         /// Target in machine coordinates, millimetres.
         to_machine: [f64; 3],
-        /// Motion style.
-        kind: SegmentKind,
+        /// Exact semantic motion kind.
+        kind: MoveKind,
     },
     /// Circular (or helical) move in program coordinates.
     Arc {
@@ -100,6 +100,21 @@ pub(crate) enum LinearClass {
     Probe,
 }
 
+impl LinearClass {
+    /// Kind used for a commanded move that has no displacement.
+    ///
+    /// A zero-length block still counts as a commanded motion for tool-hint
+    /// windows and program statistics, but it produces no display segment or
+    /// motion record.
+    const fn zero_length_kind(self) -> MoveKind {
+        match self {
+            Self::Rapid => MoveKind::Rapid,
+            Self::Feed => MoveKind::Feed,
+            Self::Probe => MoveKind::Probe,
+        }
+    }
+}
+
 /// One real motion that becomes a [`MotionRecord`](crate::MotionRecord).
 ///
 /// Display moves and real motions differ for canned cycles: a canned block
@@ -110,15 +125,15 @@ pub(crate) enum PlannedRecord {
     Line {
         /// Target in program coordinates, millimetres.
         to_work: [f64; 3],
-        /// Command class.
-        class: LinearClass,
+        /// Exact semantic motion kind, shared with the display segment.
+        kind: MoveKind,
     },
     /// Straight move whose target is an absolute machine coordinate.
     MachineLine {
         /// Target in machine coordinates, millimetres.
         to_machine: [f64; 3],
-        /// Command class.
-        class: LinearClass,
+        /// Exact semantic motion kind, shared with the display segment.
+        kind: MoveKind,
     },
     /// Circular or helical move in program coordinates.
     Arc {
@@ -922,13 +937,15 @@ impl Planner<'_> {
             let target = self.resolve_work_target(draft, block);
             self.check_coordinate(target, fallback)?;
             current_machine = draft.frame().to_machine(target);
+            let kind = linear_kind(LinearClass::Rapid, self.machine, current_machine)
+                .unwrap_or(MoveKind::Rapid);
             draft.moves.push(PlannedMove::Line {
                 to_work: target,
-                kind: SegmentKind::Rapid,
+                kind,
             });
             draft.records.push(PlannedRecord::Line {
                 to_work: target,
-                class: LinearClass::Rapid,
+                kind,
             });
         }
         let stored = if second {
@@ -945,13 +962,15 @@ impl Planner<'_> {
         };
         self.check_coordinate(home, fallback)?;
         if distance(current_machine, home) > EPSILON_MM {
+            let kind =
+                linear_kind(LinearClass::Rapid, current_machine, home).unwrap_or(MoveKind::Rapid);
             draft.moves.push(PlannedMove::MachineLine {
                 to_machine: home,
-                kind: SegmentKind::Rapid,
+                kind,
             });
             draft.records.push(PlannedRecord::MachineLine {
                 to_machine: home,
-                class: LinearClass::Rapid,
+                kind,
             });
         }
         draft.state.position = draft.frame().to_work(home);
@@ -1321,29 +1340,27 @@ impl Planner<'_> {
         motion: MotionMode,
         column: usize,
     ) -> Result<(), Vec<ParseError>> {
-        let kind = match motion {
-            MotionMode::Rapid => SegmentKind::Rapid,
-            MotionMode::Linear => SegmentKind::Feed,
-            MotionMode::Probe(_) => SegmentKind::Probe,
-            _ => return Ok(()),
-        };
         let class = match motion {
             MotionMode::Rapid => LinearClass::Rapid,
+            MotionMode::Linear => LinearClass::Feed,
             MotionMode::Probe(_) => LinearClass::Probe,
-            _ => LinearClass::Feed,
+            _ => return Ok(()),
         };
-        if kind != SegmentKind::Rapid {
+        if class != LinearClass::Rapid {
             self.require_feed(draft, column)?;
         }
         let target = self.resolve_work_target(draft, block);
         self.check_coordinate(target, column)?;
+        let target_machine = draft.frame().to_machine(target);
+        let kind = linear_kind(class, self.machine, target_machine)
+            .unwrap_or_else(|| class.zero_length_kind());
         draft.moves.push(PlannedMove::Line {
             to_work: target,
             kind,
         });
         draft.records.push(PlannedRecord::Line {
             to_work: target,
-            class,
+            kind,
         });
         draft.state.position = target;
         Ok(())
@@ -1374,9 +1391,9 @@ impl Planner<'_> {
                 "G53 requires at least one axis word",
             ));
         }
-        let kind = match motion {
-            MotionMode::Rapid => SegmentKind::Rapid,
-            MotionMode::Linear => SegmentKind::Feed,
+        let class = match motion {
+            MotionMode::Rapid => LinearClass::Rapid,
+            MotionMode::Linear => LinearClass::Feed,
             _ => {
                 return Err(self.error(
                     column,
@@ -1385,12 +1402,7 @@ impl Planner<'_> {
                 ));
             }
         };
-        let class = if motion == MotionMode::Rapid {
-            LinearClass::Rapid
-        } else {
-            LinearClass::Feed
-        };
-        if kind != SegmentKind::Rapid {
+        if class != LinearClass::Rapid {
             self.require_feed(draft, column)?;
         }
         let mut target = self.machine;
@@ -1401,13 +1413,15 @@ impl Planner<'_> {
             }
         }
         self.check_coordinate(target, column)?;
+        let kind =
+            linear_kind(class, self.machine, target).unwrap_or_else(|| class.zero_length_kind());
         draft.moves.push(PlannedMove::MachineLine {
             to_machine: target,
             kind,
         });
         draft.records.push(PlannedRecord::MachineLine {
             to_machine: target,
-            class,
+            kind,
         });
         draft.state.position = draft.frame().to_work(target);
         Ok(())
@@ -1621,30 +1635,25 @@ impl Planner<'_> {
         let mut current = start;
         if current[2] < r {
             let (start_x, start_y) = (current[0], current[1]);
-            self.push_line(
-                draft,
-                &mut current,
-                [start_x, start_y, r],
-                SegmentKind::Rapid,
-            );
+            self.push_rapid(draft, &mut current, [start_x, start_y, r]);
         }
         if math::abs(current[0] - x) > EPSILON_MM || math::abs(current[1] - y) > EPSILON_MM {
             let current_z = current[2];
-            self.push_line(draft, &mut current, [x, y, current_z], SegmentKind::Rapid);
+            self.push_rapid(draft, &mut current, [x, y, current_z]);
         }
         if current[2] > r {
-            self.push_line(draft, &mut current, [x, y, r], SegmentKind::Rapid);
+            self.push_rapid(draft, &mut current, [x, y, r]);
         }
 
         let has_material = z < r;
         match kind {
             CannedCycleKind::Drill | CannedCycleKind::DrillDwell => {
                 if has_material {
-                    self.push_line(draft, &mut current, [x, y, z], SegmentKind::Feed);
+                    self.push_line(draft, &mut current, [x, y, z], MoveKind::Drill);
                 } else {
                     draft.warnings.push(WarningKind::EmptyCannedCycle);
                 }
-                self.push_line(draft, &mut current, [x, y, retract], SegmentKind::Rapid);
+                self.push_rapid(draft, &mut current, [x, y, retract]);
             }
             CannedCycleKind::ChipBreak | CannedCycleKind::PeckDrill => {
                 if has_material {
@@ -1680,39 +1689,36 @@ impl Planner<'_> {
                         if index > 1 {
                             let clearance = (previous + self.config.peck_clearance_mm).min(r);
                             if kind == CannedCycleKind::PeckDrill {
-                                self.push_line(draft, &mut current, [x, y, r], SegmentKind::Rapid);
+                                self.push_rapid(draft, &mut current, [x, y, r]);
                             }
                             if clearance > depth {
-                                self.push_line(
-                                    draft,
-                                    &mut current,
-                                    [x, y, clearance],
-                                    SegmentKind::Rapid,
-                                );
+                                self.push_rapid(draft, &mut current, [x, y, clearance]);
                             }
                         }
-                        self.push_line(draft, &mut current, [x, y, depth], SegmentKind::Feed);
+                        self.push_line(draft, &mut current, [x, y, depth], MoveKind::Peck);
                         previous = depth;
                     }
                 } else {
                     draft.warnings.push(WarningKind::EmptyCannedCycle);
                 }
-                self.push_line(draft, &mut current, [x, y, retract], SegmentKind::Rapid);
+                self.push_rapid(draft, &mut current, [x, y, retract]);
             }
             CannedCycleKind::BoreFeedOut
             | CannedCycleKind::BoreStop
             | CannedCycleKind::BoreDwell => {
                 if has_material {
-                    self.push_line(draft, &mut current, [x, y, z], SegmentKind::Feed);
+                    self.push_line(draft, &mut current, [x, y, z], MoveKind::Bore);
                 } else {
                     draft.warnings.push(WarningKind::EmptyCannedCycle);
                 }
                 if kind == CannedCycleKind::BoreStop {
                     draft.state.spindle = SpindleMode::Off;
+                    self.push_rapid(draft, &mut current, [x, y, r]);
+                } else {
+                    self.push_line(draft, &mut current, [x, y, r], MoveKind::Bore);
                 }
-                self.push_line(draft, &mut current, [x, y, r], SegmentKind::Feed);
                 if math::abs(retract - r) > EPSILON_MM {
-                    self.push_line(draft, &mut current, [x, y, retract], SegmentKind::Rapid);
+                    self.push_rapid(draft, &mut current, [x, y, retract]);
                 }
             }
         }
@@ -1737,18 +1743,20 @@ impl Planner<'_> {
         Ok(())
     }
 
-    /// Appends a straight move, skipping zero-length geometry.
-    fn push_line(
-        &self,
-        draft: &mut Draft,
-        current: &mut [f64; 3],
-        to: [f64; 3],
-        kind: SegmentKind,
-    ) {
+    /// Appends a straight move with an explicit semantic kind, skipping
+    /// zero-length geometry.
+    fn push_line(&self, draft: &mut Draft, current: &mut [f64; 3], to: [f64; 3], kind: MoveKind) {
         if distance(*current, to) > EPSILON_MM {
             draft.moves.push(PlannedMove::Line { to_work: to, kind });
             *current = to;
         }
+    }
+
+    /// Appends the non-cutting part of a canned cycle: a vertical up move is a
+    /// retract, and every other rapid travel keeps the rapid kind.
+    fn push_rapid(&self, draft: &mut Draft, current: &mut [f64; 3], to: [f64; 3]) {
+        let kind = linear_kind(LinearClass::Rapid, *current, to).unwrap_or(MoveKind::Rapid);
+        self.push_line(draft, current, to, kind);
     }
 
     /// Builds the target of a program-coordinate move.
@@ -1959,6 +1967,72 @@ fn arc_center_from_radius(
         midpoint[0] + left[0] * height * sign,
         midpoint[1] + left[1] * height * sign,
     ])
+}
+
+/// Classifies a straight motion from its command class and geometry.
+///
+/// This is the single semantic decision for both the display segments and the
+/// motion records: the planner stores its result in both streams, so they
+/// cannot disagree.
+pub(crate) fn linear_kind(class: LinearClass, start: [f64; 3], end: [f64; 3]) -> Option<MoveKind> {
+    let dx = end[0] - start[0];
+    let dy = end[1] - start[1];
+    let dz = end[2] - start[2];
+    let planar = math::hypot(dx, dy);
+    if planar <= 1e-9 && math::abs(dz) <= 1e-9 {
+        return None;
+    }
+    Some(match class {
+        LinearClass::Rapid => {
+            if planar <= 1e-9 && dz > 0.0 {
+                MoveKind::Retract
+            } else {
+                MoveKind::Rapid
+            }
+        }
+        LinearClass::Feed => {
+            if planar <= 1e-9 {
+                if dz < 0.0 {
+                    MoveKind::Plunge
+                } else if dz > 0.0 {
+                    MoveKind::Retract
+                } else {
+                    MoveKind::Feed
+                }
+            } else if planar > 1e-3 && dz < -1e-3 {
+                MoveKind::Ramp
+            } else {
+                MoveKind::Feed
+            }
+        }
+        LinearClass::Probe => MoveKind::Probe,
+    })
+}
+
+/// Classifies an arc from its direction and travel along the plane normal.
+pub(crate) fn arc_kind(clockwise: bool, axial_delta_mm: f64) -> MoveKind {
+    if axial_delta_mm == 0.0 {
+        if clockwise {
+            MoveKind::ArcCw
+        } else {
+            MoveKind::ArcCcw
+        }
+    } else if clockwise {
+        MoveKind::HelixCw
+    } else {
+        MoveKind::HelixCcw
+    }
+}
+
+/// Maps a canned cycle to its semantic motion kind.
+pub(crate) fn canned_kind(cycle: CannedCycleKind) -> MoveKind {
+    match cycle {
+        CannedCycleKind::ChipBreak | CannedCycleKind::PeckDrill => MoveKind::Peck,
+        CannedCycleKind::BoreFeedOut | CannedCycleKind::BoreStop | CannedCycleKind::BoreDwell => {
+            MoveKind::Bore
+        }
+        CannedCycleKind::Drill | CannedCycleKind::DrillDwell => MoveKind::Drill,
+    }
 }
 
 #[cfg(test)]

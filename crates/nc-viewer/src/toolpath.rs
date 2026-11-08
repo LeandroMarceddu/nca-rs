@@ -2,7 +2,8 @@
 
 use crate::arc::{Arc, ArcPlane, DEFAULT_CHORD_TOLERANCE};
 use crate::geom::{Bounds3, Point3};
-use crate::segment::{Segment, SegmentKind};
+use crate::move_kind::MoveKind;
+use crate::segment::Segment;
 
 /// A flat, append-only stream of toolpath segments.
 ///
@@ -113,12 +114,13 @@ impl Toolpath {
     /// Appends one straight segment.
     ///
     /// Returns `false` for non-finite input. `kind` is caller-controlled; the
-    /// parser decides whether a line is a rapid, feed, plunge, or probe move.
+    /// parser assigns the exact semantic kind (rapid, retract, feed, plunge,
+    /// ramp, arc, helix, canned cycle, or probe).
     pub fn append_line(
         &mut self,
         start: Point3,
         end: Point3,
-        kind: SegmentKind,
+        kind: MoveKind,
         layer: u16,
         tool: u16,
     ) -> bool {
@@ -131,7 +133,8 @@ impl Toolpath {
         })
     }
 
-    /// Tessellates `arc` and appends its chords as [`SegmentKind::Arc`].
+    /// Tessellates `arc` and appends its chords as [`MoveKind::ArcCw`] or
+    /// [`MoveKind::ArcCcw`], matching the arc direction.
     ///
     /// `chord_tolerance` is the maximum world-space sagitta; non-positive
     /// values use [`DEFAULT_CHORD_TOLERANCE`]. The exact arc bounds are folded
@@ -146,6 +149,11 @@ impl Toolpath {
         if arc_bounds.is_empty() {
             return 0;
         }
+        let kind = if arc.is_clockwise() {
+            MoveKind::ArcCw
+        } else {
+            MoveKind::ArcCcw
+        };
 
         self.segments.reserve(count);
         let mut start = arc.point_at_index(0, count);
@@ -154,7 +162,7 @@ impl Toolpath {
             self.segments.push(Segment {
                 start,
                 end,
-                kind: SegmentKind::Arc,
+                kind,
                 layer,
                 tool,
             });
@@ -353,14 +361,14 @@ impl Synthetic {
         let end = Point3::new(end_x, self.position.y, CUT_Z);
         let _ = self
             .toolpath
-            .append_line(self.position, end, SegmentKind::Feed, 0, 0);
+            .append_line(self.position, end, MoveKind::Feed, 0, 0);
         self.position = end;
 
         if hit_boundary && self.toolpath.len() < self.count {
             let stepover = Point3::new(end_x, self.position.y + ROW_STEP, CUT_Z);
             let _ = self
                 .toolpath
-                .append_line(self.position, stepover, SegmentKind::Feed, 0, 0);
+                .append_line(self.position, stepover, MoveKind::Feed, 0, 0);
             self.position = stepover;
             self.direction = -self.direction;
         }
@@ -370,10 +378,13 @@ impl Synthetic {
         if self.toolpath.len() >= self.count {
             return;
         }
-        if self
-            .toolpath
-            .append_line(self.position, end, SegmentKind::Rapid, 0, 0)
-        {
+        let kind =
+            if end.x == self.position.x && end.y == self.position.y && end.z > self.position.z {
+                MoveKind::Retract
+            } else {
+                MoveKind::Rapid
+            };
+        if self.toolpath.append_line(self.position, end, kind, 0, 0) {
             self.position = end;
         }
     }
@@ -384,7 +395,7 @@ impl Synthetic {
         }
         if self
             .toolpath
-            .append_line(self.position, end, SegmentKind::Plunge, 0, 0)
+            .append_line(self.position, end, MoveKind::Plunge, 0, 0)
         {
             self.position = end;
         }
@@ -412,7 +423,7 @@ mod tests {
         assert!(toolpath.append_line(
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(10.0, 5.0, -1.0),
-            SegmentKind::Feed,
+            MoveKind::Feed,
             3,
             1,
         ));
@@ -425,7 +436,7 @@ mod tests {
         assert!(!toolpath.append_line(
             Point3::new(f32::NAN, 0.0, 0.0),
             Point3::new(1.0, 1.0, 1.0),
-            SegmentKind::Feed,
+            MoveKind::Feed,
             0,
             0,
         ));
@@ -433,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn append_arc_uses_arc_kind_and_exact_bounds() {
+    fn append_arc_uses_the_arc_kind_and_exact_bounds() {
         let mut toolpath = Toolpath::new();
         let arc =
             Arc::full_circle(ArcPlane::Xy, Point3::ZERO, 10.0, 0.0, false).expect("valid circle");
@@ -444,7 +455,7 @@ mod tests {
             toolpath
                 .segments()
                 .iter()
-                .all(|segment| segment.kind == SegmentKind::Arc)
+                .all(|segment| segment.kind == MoveKind::ArcCcw)
         );
         assert_eq!(toolpath.bounds().min().x, -10.0);
         assert_eq!(toolpath.bounds().max().x, 10.0);
@@ -486,22 +497,28 @@ mod tests {
     fn synthetic_path_has_a_realistic_kind_mix() {
         let toolpath = synthetic_toolpath(5000);
         let mut rapid = 0;
+        let mut retract = 0;
         let mut feed = 0;
         let mut plunge = 0;
-        let mut arc = 0;
+        let mut arc_cw = 0;
+        let mut arc_ccw = 0;
         for segment in toolpath.segments() {
             match segment.kind {
-                SegmentKind::Rapid => rapid += 1,
-                SegmentKind::Feed => feed += 1,
-                SegmentKind::Plunge => plunge += 1,
-                SegmentKind::Arc => arc += 1,
-                SegmentKind::Probe => {}
+                MoveKind::Rapid => rapid += 1,
+                MoveKind::Retract => retract += 1,
+                MoveKind::Feed => feed += 1,
+                MoveKind::Plunge => plunge += 1,
+                MoveKind::ArcCw => arc_cw += 1,
+                MoveKind::ArcCcw => arc_ccw += 1,
+                other => panic!("unexpected synthetic kind {other:?}"),
             }
         }
         assert!(rapid > 0);
+        assert!(retract > 0);
         assert!(feed > 0);
         assert!(plunge > 0);
-        assert!(arc > 0);
+        assert!(arc_cw > 0);
+        assert!(arc_ccw > 0);
         assert!(toolpath.bounds().contains(Point3::new(0.0, 0.0, CUT_Z)));
         assert!(toolpath.bounds().size().x <= ROW_LENGTH + 20.0);
         assert!(toolpath.bounds().size().y <= 200.0);

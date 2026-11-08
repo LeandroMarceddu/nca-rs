@@ -42,7 +42,7 @@
 //! [`Parser::set_parameters`] to inspect or seed the table.
 
 use nc_core::{Position, ToolHint, ToolShape, Units, math};
-use nc_viewer::{AnnotationKind, MoveKind, Point3, SegmentKind, Toolpath};
+use nc_viewer::{AnnotationKind, MoveKind, Point3, Toolpath};
 
 use crate::block::Block;
 use crate::config::ParserConfig;
@@ -54,7 +54,7 @@ use crate::motion::{
     MotionRecord, SkippedBlock,
 };
 use crate::planner::{
-    Frame, LinearClass, Plan, PlannedAnnotation, PlannedMove, PlannedRecord, Planner,
+    Frame, Plan, PlannedAnnotation, PlannedMove, PlannedRecord, Planner, arc_kind, canned_kind,
 };
 use crate::program::{Program, ProgramLine, ProgramStats};
 use crate::state::{CannedCycleKind, ParserState, Plane};
@@ -505,9 +505,9 @@ impl Parser {
                 }
                 for planned in &records {
                     match *planned {
-                        PlannedRecord::Line { to_work, class } => {
+                        PlannedRecord::Line { to_work, kind } => {
                             let end = frame.to_machine(to_work);
-                            if let Some(kind) = linear_kind(class, record_machine, end) {
+                            if distance(record_machine, end) > 1.0e-9 {
                                 self.push_motion(
                                     line,
                                     kind,
@@ -526,8 +526,8 @@ impl Parser {
                             record_machine = end;
                             self.canned_run = None;
                         }
-                        PlannedRecord::MachineLine { to_machine, class } => {
-                            if let Some(kind) = linear_kind(class, record_machine, to_machine) {
+                        PlannedRecord::MachineLine { to_machine, kind } => {
+                            if distance(record_machine, to_machine) > 1.0e-9 {
                                 self.push_motion(
                                     line,
                                     kind,
@@ -557,17 +557,7 @@ impl Parser {
                             let center = frame.to_machine(center_work);
                             let arc =
                                 arc_record(record_machine, end, center, plane, clockwise, format);
-                            let kind = if arc.axial_delta_mm == 0.0 {
-                                if clockwise {
-                                    MoveKind::ArcCw
-                                } else {
-                                    MoveKind::ArcCcw
-                                }
-                            } else if clockwise {
-                                MoveKind::HelixCw
-                            } else {
-                                MoveKind::HelixCcw
-                            };
+                            let kind = arc_kind(clockwise, arc.axial_delta_mm);
                             self.push_motion(
                                 line,
                                 kind,
@@ -737,21 +727,12 @@ impl Parser {
         &mut self,
         from_machine: [f64; 3],
         to_machine: [f64; 3],
-        kind: SegmentKind,
+        kind: MoveKind,
         tool: u32,
     ) {
         if distance(from_machine, to_machine) <= 1.0e-9 {
             return;
         }
-        let kind = if kind == SegmentKind::Feed
-            && math::abs(from_machine[0] - to_machine[0]) <= 1.0e-9
-            && math::abs(from_machine[1] - to_machine[1]) <= 1.0e-9
-            && to_machine[2] < from_machine[2]
-        {
-            SegmentKind::Plunge
-        } else {
-            kind
-        };
         let from = point(from_machine);
         let to = point(to_machine);
         let length = f64::from(from.distance(to));
@@ -779,6 +760,7 @@ impl Parser {
     ) {
         let (u, v) = plane.axes();
         let normal = plane.normal_axis();
+        let kind = arc_kind(clockwise, end[normal] - start[normal]);
         let center_uv = [center[u], center[v]];
         let start_uv = [start[u], start[v]];
         let end_uv = [end[u], end[v]];
@@ -787,7 +769,7 @@ impl Parser {
         let end_angle = math::atan2(end_uv[1] - center_uv[1], end_uv[0] - center_uv[0]);
         if !radius.is_finite() || radius <= 0.0 {
             tracing::warn!("arc has no usable radius; drawing a straight move");
-            self.emit_line(start, end, SegmentKind::Feed, tool);
+            self.emit_line(start, end, MoveKind::Feed, tool);
             return;
         }
         let sweep = directed_sweep(start_angle, end_angle, clockwise);
@@ -843,7 +825,7 @@ impl Parser {
                 self.toolpath.append_line(
                     point(previous),
                     point(next),
-                    SegmentKind::Arc,
+                    kind,
                     0,
                     display_tool(tool),
                 );
@@ -852,48 +834,43 @@ impl Parser {
             }
         }
         if distance(previous, end) > 1.0e-9 {
-            self.toolpath.append_line(
-                point(previous),
-                point(end),
-                SegmentKind::Arc,
-                0,
-                display_tool(tool),
-            );
+            self.toolpath
+                .append_line(point(previous), point(end), kind, 0, display_tool(tool));
             count += 1;
         }
         let planar_length = radius * total;
         let length = math::hypot(planar_length, normal_end - normal_start);
-        self.account_segments(SegmentKind::Arc, count, length, tool);
+        self.account_segments(kind, count, length, tool);
     }
 
     /// Accounts for one segment's kind and length.
-    fn account_segment(&mut self, kind: SegmentKind, length_mm: f64, tool: u32) {
+    fn account_segment(&mut self, kind: MoveKind, length_mm: f64, tool: u32) {
         self.account_segments(kind, 1, length_mm, tool);
     }
 
     /// Accounts for `count` segments of `kind` with a total exact length.
-    fn account_segments(&mut self, kind: SegmentKind, count: usize, length_mm: f64, tool: u32) {
+    fn account_segments(&mut self, kind: MoveKind, count: usize, length_mm: f64, tool: u32) {
         if count == 0 {
             return;
         }
         match kind {
-            SegmentKind::Rapid => {
+            MoveKind::Rapid | MoveKind::Retract => {
                 self.stats.rapid_segments += count;
                 self.stats.rapid_length_mm += length_mm;
             }
-            SegmentKind::Feed => {
+            MoveKind::Feed | MoveKind::Ramp => {
                 self.stats.feed_segments += count;
                 self.stats.cutting_length_mm += length_mm;
             }
-            SegmentKind::Plunge => {
+            MoveKind::Plunge | MoveKind::Drill | MoveKind::Peck | MoveKind::Bore => {
                 self.stats.plunge_segments += count;
                 self.stats.cutting_length_mm += length_mm;
             }
-            SegmentKind::Arc => {
+            MoveKind::ArcCw | MoveKind::ArcCcw | MoveKind::HelixCw | MoveKind::HelixCcw => {
                 self.stats.arc_segments += count;
                 self.stats.cutting_length_mm += length_mm;
             }
-            SegmentKind::Probe => {
+            MoveKind::Probe => {
                 self.stats.probe_segments += count;
             }
         }
@@ -905,42 +882,6 @@ impl Parser {
 /// Converts a `u32` tool number to the display toolpath's `u16` id.
 fn display_tool(tool: u32) -> u16 {
     u16::try_from(tool).unwrap_or(u16::MAX)
-}
-
-/// Classifies a straight motion from its command class and machine geometry.
-fn linear_kind(class: LinearClass, start: [f64; 3], end: [f64; 3]) -> Option<MoveKind> {
-    let dx = end[0] - start[0];
-    let dy = end[1] - start[1];
-    let dz = end[2] - start[2];
-    let planar = math::hypot(dx, dy);
-    if planar <= 1e-9 && math::abs(dz) <= 1e-9 {
-        return None;
-    }
-    Some(match class {
-        LinearClass::Rapid => {
-            if planar <= 1e-9 && dz > 0.0 {
-                MoveKind::Retract
-            } else {
-                MoveKind::Rapid
-            }
-        }
-        LinearClass::Feed => {
-            if planar <= 1e-9 {
-                if dz < 0.0 {
-                    MoveKind::Plunge
-                } else if dz > 0.0 {
-                    MoveKind::Retract
-                } else {
-                    MoveKind::Feed
-                }
-            } else if planar > 1e-3 && dz < -1e-3 {
-                MoveKind::Ramp
-            } else {
-                MoveKind::Feed
-            }
-        }
-        LinearClass::Probe => MoveKind::Probe,
-    })
 }
 
 /// Builds the exact arc record for one planned arc.
@@ -979,17 +920,6 @@ fn arc_record(
         sweep_rad: if clockwise { -delta } else { delta },
         axial_delta_mm: end[normal] - start[normal],
         format,
-    }
-}
-
-/// Maps a canned cycle to its semantic motion kind.
-fn canned_kind(cycle: CannedCycleKind) -> MoveKind {
-    match cycle {
-        CannedCycleKind::ChipBreak | CannedCycleKind::PeckDrill => MoveKind::Peck,
-        CannedCycleKind::BoreFeedOut | CannedCycleKind::BoreStop | CannedCycleKind::BoreDwell => {
-            MoveKind::Bore
-        }
-        CannedCycleKind::Drill | CannedCycleKind::DrillDwell => MoveKind::Drill,
     }
 }
 

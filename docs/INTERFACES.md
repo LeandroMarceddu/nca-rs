@@ -173,16 +173,36 @@ impl AnnotationKind { pub const fn label(&self) -> &'static str; }
 `color_token` names a theme token and never a literal color. The app owns the
 dark, light, and high-contrast palettes.
 
-The existing display types are unchanged by the contract:
+The display types carry the same semantic kinds:
 
 ```rust
-pub struct Segment { pub start: Point3, pub end: Point3, pub layer: u16, pub tool: u16, pub kind: SegmentKind }
-pub struct Toolpath { /* flat segment array + exact bounds */ }
-pub struct StockBox { pub min: Point3, pub max: Point3 }
+pub struct Segment {
+    pub start: Point3,
+    pub end: Point3,
+    pub layer: u16,
+    pub tool: u16,
+    pub kind: MoveKind,
+}
+pub struct Polyline {
+    pub points: Vec<Point2>,
+    pub depth: f32,
+    pub kind: MoveKind,
+    pub layer: u16,
+    pub tool: u16,
+}
+impl Toolpath {
+    pub fn append_line(&mut self, start: Point3, end: Point3,
+                       kind: MoveKind, layer: u16, tool: u16) -> bool;
+}
 ```
 
-`Segment.tool` remains `u16` for display. All analysis and simulation tool ids
-are `u32`.
+`SegmentKind` is removed. `MoveKind` also derives `Ord`/`PartialOrd` for
+per-kind visibility arrays. `Segment.tool` remains `u16` for display; all
+analysis and simulation tool ids are `u32`.
+
+`ProgramStats` folds semantic kinds into its existing counters: `Retract`
+counts as rapid, `Ramp` as feed, and `Drill`/`Peck`/`Bore` as plunge. The
+counters are aggregates, not the taxonomy.
 
 ## `nc-gcode`
 

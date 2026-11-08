@@ -28,8 +28,8 @@ use gpui_kit::{
 };
 use nc_gcode::Program;
 use nc_viewer::{
-    Bounds2, Bounds3, Camera2D, Camera3D, MoveKind, MoveStyle, Point2, Point3, RenderOptions,
-    RenderPlan, SegmentKind, StockBox, Toolpath, Viewport,
+    Bounds2, Bounds3, Camera2D, Camera3D, HoleMarker, MoveKind, Point2, Point3, RenderOptions,
+    RenderPlan, StockBox, Toolpath, Viewport,
 };
 
 use crate::theme::{Palette, move_color};
@@ -286,7 +286,7 @@ pub trait HasViewer {
 /// `program` is the parsed program; `None` draws the deterministic synthetic
 /// preview. `stock` is the display box inferred by `nc-stock` or entered by
 /// the operator. `marker` is the tool position at the program start. The
-/// `visibility` array gates the five display segment groups.
+/// `visibility` array gates exactly one semantic [`MoveKind`] per slot.
 #[allow(clippy::too_many_arguments)]
 pub fn view<T: HasViewer + 'static>(
     handle: &ViewerHandle,
@@ -294,7 +294,7 @@ pub fn view<T: HasViewer + 'static>(
     program: Option<Arc<Program>>,
     stock: Option<StockBox>,
     marker: Option<Point3>,
-    visibility: [bool; 5],
+    visibility: [bool; MoveKind::ALL.len()],
     preview: bool,
     view: Entity<T>,
 ) -> impl IntoElement {
@@ -654,7 +654,7 @@ fn paint(
     program: Option<Arc<Program>>,
     stock: Option<StockBox>,
     marker: Option<Point3>,
-    visibility: [bool; 5],
+    visibility: [bool; MoveKind::ALL.len()],
     preview: bool,
     palette: Palette,
     window: &mut Window,
@@ -1058,35 +1058,15 @@ fn paint_envelope_3d(
     paint_path(outline, palette.border_strong.alpha(0.8), window);
 }
 
-/// Representative semantic kind for one display segment group.
-///
-/// The parser still emits the five display kinds; this is the closest stable
-/// mapping until the semantic taxonomy reaches the toolpath stream.
+/// Colour for one semantic move kind.
 #[must_use]
-pub fn segment_kind(kind: SegmentKind) -> MoveKind {
-    match kind {
-        SegmentKind::Rapid => MoveKind::Rapid,
-        SegmentKind::Feed => MoveKind::Feed,
-        SegmentKind::Plunge => MoveKind::Plunge,
-        SegmentKind::Arc => MoveKind::ArcCw,
-        SegmentKind::Probe => MoveKind::Probe,
-    }
+pub fn kind_color(kind: MoveKind, palette: Palette) -> Hsla {
+    move_color(kind, palette)
 }
 
-/// Style for one display segment group.
-#[must_use]
-pub fn segment_style(kind: SegmentKind) -> MoveStyle {
-    segment_kind(kind).style()
-}
-
-/// Colour for one display segment group.
-#[must_use]
-pub fn segment_color(kind: SegmentKind, palette: Palette) -> Hsla {
-    move_color(segment_kind(kind), palette)
-}
-
-fn path_builder_for(kind: SegmentKind) -> PathBuilder {
-    let style = segment_style(kind);
+/// Builds a stroke with the kind's width and dash pattern.
+fn path_builder_for(kind: MoveKind) -> PathBuilder {
+    let style = kind.style();
     let builder = PathBuilder::stroke(px(style.width));
     match style.dash {
         Some([on, off]) => builder.dash_array(&[px(on), px(off)]),
@@ -1094,17 +1074,100 @@ fn path_builder_for(kind: SegmentKind) -> PathBuilder {
     }
 }
 
+/// Screen-space radius of the base hole marker ring, in logical pixels.
+const HOLE_MARKER_RADIUS_PX: f32 = 4.2;
+
+/// Paints the hole marker that belongs to a canned-cycle kind.
+fn paint_hole_marker(window: &mut Window, marker: HoleMarker, color: Hsla, x: f32, y: f32) {
+    match marker {
+        HoleMarker::Ring => paint_ring(window, color, x, y, HOLE_MARKER_RADIUS_PX, None),
+        HoleMarker::DashedRing => {
+            paint_ring(window, color, x, y, HOLE_MARKER_RADIUS_PX, Some([2.0, 2.0]))
+        }
+        HoleMarker::DoubleRing => {
+            paint_ring(window, color, x, y, HOLE_MARKER_RADIUS_PX * 0.68, None);
+            paint_ring(window, color, x, y, HOLE_MARKER_RADIUS_PX * 1.25, None);
+        }
+    }
+}
+
+/// Paints a screen-space ring, optionally dashed.
+fn paint_ring(
+    window: &mut Window,
+    color: Hsla,
+    x: f32,
+    y: f32,
+    radius: f32,
+    dash: Option<[f32; 2]>,
+) {
+    const SEGMENTS: usize = 20;
+    if !x.is_finite() || !y.is_finite() || !radius.is_finite() || radius <= 0.0 {
+        return;
+    }
+    let mut builder = PathBuilder::stroke(px(1.2));
+    if let Some([on, off]) = dash {
+        builder = builder.dash_array(&[px(on), px(off)]);
+    }
+    for index in 0..=SEGMENTS {
+        #[allow(clippy::cast_precision_loss)]
+        let angle = nc_core::math::TAU * index as f64 / SEGMENTS as f64;
+        #[allow(clippy::cast_possible_truncation)]
+        let point_x = x + radius * nc_core::math::cos(angle) as f32;
+        #[allow(clippy::cast_possible_truncation)]
+        let point_y = y + radius * nc_core::math::sin(angle) as f32;
+        if index == 0 {
+            builder.move_to(point(px(point_x), px(point_y)));
+        } else {
+            builder.line_to(point(px(point_x), px(point_y)));
+        }
+    }
+    builder.close();
+    paint_path(builder, color, window);
+}
+
+/// Collects and paints one hole marker per canned-cycle polyline.
+fn paint_hole_markers(
+    window: &mut Window,
+    plan: &RenderPlan,
+    visibility: [bool; MoveKind::ALL.len()],
+    palette: Palette,
+    left: f32,
+    top: f32,
+) {
+    let mut seen = std::collections::BTreeSet::new();
+    for polyline in plan.polylines() {
+        if !visibility[polyline.kind as usize] {
+            continue;
+        }
+        let Some(marker) = polyline.kind.style().marker else {
+            continue;
+        };
+        let Some(first) = polyline.points.first() else {
+            continue;
+        };
+        let x = left + first.x;
+        let y = top + first.y;
+        if !x.is_finite() || !y.is_finite() {
+            continue;
+        }
+        if !seen.insert((polyline.kind as u8, x.to_bits(), y.to_bits())) {
+            continue;
+        }
+        paint_hole_marker(window, marker, kind_color(polyline.kind, palette), x, y);
+    }
+}
+
 /// Paints the 3D plan in the plan's far-to-near order.
 fn paint_plan_3d(
     bounds: Bounds<Pixels>,
     plan: &RenderPlan,
-    visibility: [bool; 5],
+    visibility: [bool; MoveKind::ALL.len()],
     palette: Palette,
     window: &mut Window,
 ) {
     let left = f32::from(bounds.origin.x);
     let top = f32::from(bounds.origin.y);
-    let mut batch: Option<(SegmentKind, PathBuilder)> = None;
+    let mut batch: Option<(MoveKind, PathBuilder)> = None;
 
     for polyline in plan.polylines() {
         if !visibility[polyline.kind as usize] {
@@ -1115,12 +1178,12 @@ fn paint_plan_3d(
         }
         if polyline.points.len() == 1 {
             if let Some((kind, builder)) = batch.take() {
-                paint_path(builder, segment_color(kind, palette), window);
+                paint_path(builder, kind_color(kind, palette), window);
             }
             let single = polyline.points[0];
             paint_dot(
                 window,
-                segment_color(polyline.kind, palette),
+                kind_color(polyline.kind, palette),
                 left + single.x,
                 top + single.y,
                 1.8,
@@ -1132,7 +1195,7 @@ fn paint_plan_3d(
             .is_some_and(|(kind, _)| *kind == polyline.kind);
         if !continues {
             if let Some((kind, builder)) = batch.take() {
-                paint_path(builder, segment_color(kind, palette), window);
+                paint_path(builder, kind_color(kind, palette), window);
             }
             batch = Some((polyline.kind, path_builder_for(polyline.kind)));
         }
@@ -1148,8 +1211,9 @@ fn paint_plan_3d(
         }
     }
     if let Some((kind, builder)) = batch.take() {
-        paint_path(builder, segment_color(kind, palette), window);
+        paint_path(builder, kind_color(kind, palette), window);
     }
+    paint_hole_markers(window, plan, visibility, palette, left, top);
 }
 
 /// Screen position of the 3D tool marker, or `None` when it is behind the near
@@ -1215,43 +1279,37 @@ fn paint_marker_3d(
 fn paint_plan(
     bounds: Bounds<Pixels>,
     plan: &RenderPlan,
-    visibility: [bool; 5],
+    visibility: [bool; MoveKind::ALL.len()],
     palette: Palette,
     window: &mut Window,
 ) {
     let left = f32::from(bounds.origin.x);
     let top = f32::from(bounds.origin.y);
 
-    let mut rapid = path_builder_for(SegmentKind::Rapid);
-    let mut feed = path_builder_for(SegmentKind::Feed);
-    let mut plunge = path_builder_for(SegmentKind::Plunge);
-    let mut arc = path_builder_for(SegmentKind::Arc);
-    let mut probe = path_builder_for(SegmentKind::Probe);
+    let mut builders: [PathBuilder; MoveKind::ALL.len()] =
+        std::array::from_fn(|index| path_builder_for(MoveKind::ALL[index]));
+    let mut used = [false; MoveKind::ALL.len()];
     let mut dots: Vec<(f32, f32, Hsla)> = Vec::new();
 
     for polyline in plan.polylines() {
-        if !visibility[polyline.kind as usize] {
+        let index = polyline.kind as usize;
+        if !visibility[index] {
             continue;
         }
-        let target = match polyline.kind {
-            SegmentKind::Rapid => &mut rapid,
-            SegmentKind::Feed => &mut feed,
-            SegmentKind::Plunge => &mut plunge,
-            SegmentKind::Arc => &mut arc,
-            SegmentKind::Probe => &mut probe,
-        };
         if polyline.points.len() == 1 {
             let single = polyline.points[0];
             dots.push((
                 left + single.x,
                 top + single.y,
-                segment_color(polyline.kind, palette),
+                kind_color(polyline.kind, palette),
             ));
             continue;
         }
-        for (index, screen) in polyline.points.iter().enumerate() {
+        used[index] = true;
+        let target = &mut builders[index];
+        for (point_index, screen) in polyline.points.iter().enumerate() {
             let world = point(px(left + screen.x), px(top + screen.y));
-            if index == 0 {
+            if point_index == 0 {
                 target.move_to(world);
             } else {
                 target.line_to(world);
@@ -1259,20 +1317,15 @@ fn paint_plan(
         }
     }
 
-    for (kind, builder) in [
-        (SegmentKind::Rapid, rapid),
-        (SegmentKind::Feed, feed),
-        (SegmentKind::Plunge, plunge),
-        (SegmentKind::Arc, arc),
-        (SegmentKind::Probe, probe),
-    ] {
-        if visibility[kind as usize] {
-            paint_path(builder, segment_color(kind, palette), window);
+    for (index, builder) in builders.into_iter().enumerate() {
+        if visibility[index] && used[index] {
+            paint_path(builder, kind_color(MoveKind::ALL[index], palette), window);
         }
     }
     for (x, y, color) in dots {
         paint_dot(window, color, x, y, 1.8);
     }
+    paint_hole_markers(window, plan, visibility, palette, left, top);
 }
 
 /// Screen position of the 2D tool marker, or `None` when it is outside the
@@ -1505,6 +1558,40 @@ mod tests {
         let faces = visible_stock_faces(&stock, &camera);
         assert_eq!(faces.len(), 3);
         assert!(faces.iter().all(|face| face.iter().all(|index| *index < 8)));
+    }
+
+    #[test]
+    fn every_move_kind_has_its_own_colour_and_stroke() {
+        for palette in [Palette::dark(), Palette::light(), Palette::high_contrast()] {
+            let mut colors: Vec<Hsla> = Vec::with_capacity(MoveKind::ALL.len());
+            for kind in MoveKind::ALL {
+                let color = kind_color(kind, palette);
+                assert!(
+                    !colors.contains(&color),
+                    "{kind:?} repeats a colour in this palette"
+                );
+                colors.push(color);
+                let style = kind.style();
+                assert!(style.width > 0.0, "{kind:?} width");
+                assert!(!style.label.is_empty(), "{kind:?} label");
+            }
+        }
+    }
+
+    #[test]
+    fn hole_kinds_have_distinct_markers() {
+        let markers: Vec<HoleMarker> = MoveKind::ALL
+            .into_iter()
+            .filter_map(|kind| kind.style().marker)
+            .collect();
+        assert_eq!(
+            markers,
+            vec![
+                HoleMarker::Ring,
+                HoleMarker::DashedRing,
+                HoleMarker::DoubleRing
+            ]
+        );
     }
 
     #[test]

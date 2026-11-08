@@ -39,7 +39,10 @@
 //! assert_eq!(program.motions[0].kind, MoveKind::Retract);
 //! assert_eq!(program.motions[1].kind, MoveKind::Plunge);
 //! assert_eq!(program.motions[2].kind, MoveKind::Feed);
+//! assert_eq!(program.toolpath.segments()[0].kind, MoveKind::Retract);
 //! ```
+//!
+//! The display toolpath carries the same semantic kinds as the records.
 //!
 //! # Motion records
 //!
@@ -52,7 +55,10 @@
 //!
 //! The display [`Toolpath`](nc_viewer::Toolpath) is still produced. It remains
 //! the renderer's compact `f32` chord stream and a fallback for very large
-//! programs.
+//! programs. Every display segment carries the same semantic [`MoveKind`] as
+//! the motion record it came from, so the canvas paints `ArcCw` separately
+//! from `ArcCcw`, and canned-cycle cutting moves keep `Drill`, `Peck`, or
+//! `Bore` instead of collapsing to a generic feed or plunge.
 //!
 //! # Lossy parsing
 //!

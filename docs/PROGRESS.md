@@ -40,6 +40,8 @@ project knowledge store is lost.
 | 2026-11-08 | analysis skeleton: clippy + `cargo test -p nc-analysis` | pass, 18 + 25 + doctest; deterministic canonical JSON |
 | 2026-11-08 | app shell: clippy + `cargo test -p nc-app` | pass, 44 tests; 5 isolated nested captures at target sizes |
 | 2026-11-08 | Phase 1 gate: fmt + workspace clippy + workspace test | pass |
+| 2026-11-08 | first three rules: clippy + `cargo test -p nc-analysis` | pass, 18 + 25 + 14 + doctest |
+| 2026-11-08 | semantic rendering: viewer/gcode/app tests | pass, 70 viewer + 504 workspace |
 
 ## Accepted milestones
 
@@ -54,6 +56,8 @@ project knowledge store is lost.
 - **Vertical-slice rules** — `modal.feed_missing`, `travel.machine_envelope`,
   `clearance.rapid_at_depth` with positive/near-miss tests and coverage
   (2026-11-08).
+- **Semantic rendering** — `MoveKind` end-to-end; `SegmentKind` removed; the
+  painter, toggles, dashes, and hole markers use all 13 kinds (2026-11-08).
 
 ## Version control
 

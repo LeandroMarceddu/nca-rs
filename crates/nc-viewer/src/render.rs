@@ -3,7 +3,8 @@
 use crate::camera2d::Camera2D;
 use crate::camera3d::Camera3D;
 use crate::geom::{Bounds2, Point2};
-use crate::segment::{Segment, SegmentKind};
+use crate::move_kind::MoveKind;
+use crate::segment::Segment;
 use crate::toolpath::Toolpath;
 
 /// Screen-space distance under which two projected endpoints are treated as
@@ -28,7 +29,7 @@ pub struct Polyline {
     /// Always `0.0` for the 2D plan; camera-space depth for the 3D plan.
     pub depth: f32,
     /// Motion style of every segment in this polyline.
-    pub kind: SegmentKind,
+    pub kind: MoveKind,
     /// Layer id of every segment in this polyline.
     pub layer: u16,
     /// Tool number of every segment in this polyline.
@@ -38,7 +39,7 @@ pub struct Polyline {
 impl Polyline {
     /// Creates a polyline. A non-finite depth is stored as zero.
     #[must_use]
-    pub fn new(points: Vec<Point2>, depth: f32, kind: SegmentKind, layer: u16, tool: u16) -> Self {
+    pub fn new(points: Vec<Point2>, depth: f32, kind: MoveKind, layer: u16, tool: u16) -> Self {
         Self {
             points,
             depth: if depth.is_finite() { depth } else { 0.0 },
@@ -250,7 +251,7 @@ impl RenderPlan {
 /// Incrementally builds one batched polyline.
 struct RunBuilder {
     points: Vec<Point2>,
-    kind: SegmentKind,
+    kind: MoveKind,
     layer: u16,
     tool: u16,
     depth_sum: f64,
@@ -433,7 +434,7 @@ mod tests {
             let x = index as f32 * 0.05;
             let y = (index as f32 * 0.37).sin() * 0.001;
             let next = Point3::new(x + 0.05, y, 0.0);
-            assert!(toolpath.append_line(previous, next, SegmentKind::Feed, 0, 0));
+            assert!(toolpath.append_line(previous, next, MoveKind::Feed, 0, 0));
             previous = next;
         }
         toolpath
@@ -456,7 +457,7 @@ mod tests {
     fn single_point_is_safe() {
         let mut toolpath = Toolpath::new();
         let point = Point3::new(1.0, 2.0, 0.0);
-        toolpath.append_line(point, point, SegmentKind::Feed, 0, 0);
+        toolpath.append_line(point, point, MoveKind::Feed, 0, 0);
 
         let mut camera2d = Camera2D::new(crate::viewport::Viewport::new(800.0, 600.0));
         camera2d.fit(toolpath.bounds().xy_bounds(), 0.0);
@@ -513,7 +514,7 @@ mod tests {
             let x = index as f32 * 0.1;
             let y = (index as f32 * 0.2).sin() * 5.0;
             let next = Point3::new(x + 0.1, y, 0.0);
-            toolpath.append_line(previous, next, SegmentKind::Feed, 0, 0);
+            toolpath.append_line(previous, next, MoveKind::Feed, 0, 0);
             previous = next;
         }
         let mut camera = Camera2D::new(crate::viewport::Viewport::new(800.0, 600.0));
@@ -566,28 +567,28 @@ mod tests {
         toolpath.append_line(
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(1.0, 0.0, 0.0),
-            SegmentKind::Feed,
+            MoveKind::Feed,
             0,
             0,
         );
         toolpath.append_line(
             Point3::new(1.0, 0.0, 0.0),
             Point3::new(2.0, 0.0, 0.0),
-            SegmentKind::Feed,
+            MoveKind::Feed,
             0,
             0,
         );
         toolpath.append_line(
             Point3::new(2.0, 0.0, 0.0),
             Point3::new(3.0, 0.0, 0.0),
-            SegmentKind::Rapid,
+            MoveKind::Rapid,
             0,
             0,
         );
         toolpath.append_line(
             Point3::new(3.0, 0.0, 0.0),
             Point3::new(4.0, 0.0, 0.0),
-            SegmentKind::Rapid,
+            MoveKind::Rapid,
             1,
             0,
         );
@@ -605,10 +606,42 @@ mod tests {
             },
         );
         assert_eq!(plan.len(), 3);
-        assert_eq!(plan.polylines[0].kind, SegmentKind::Feed);
+        assert_eq!(plan.polylines[0].kind, MoveKind::Feed);
         assert_eq!(plan.polylines[0].point_count(), 3);
-        assert_eq!(plan.polylines[1].kind, SegmentKind::Rapid);
+        assert_eq!(plan.polylines[1].kind, MoveKind::Rapid);
         assert_eq!(plan.polylines[2].layer, 1);
+    }
+
+    #[test]
+    fn every_move_kind_survives_into_a_render_plan() {
+        let mut toolpath = Toolpath::new();
+        for (index, kind) in MoveKind::ALL.into_iter().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let x = index as f32 * 2.0;
+            assert!(toolpath.append_line(
+                Point3::new(x, 0.0, 0.0),
+                Point3::new(x + 1.0, 0.0, 0.0),
+                kind,
+                0,
+                0,
+            ));
+        }
+        let camera = Camera2D::fitted(
+            crate::viewport::Viewport::new(800.0, 600.0),
+            toolpath.bounds().xy_bounds(),
+            10.0,
+        );
+        let plan = RenderPlan::from_2d(
+            &toolpath,
+            &camera,
+            RenderOptions {
+                decimation_tolerance_px: 0.0,
+                ..RenderOptions::default()
+            },
+        );
+        assert_eq!(plan.len(), MoveKind::ALL.len());
+        let kinds: Vec<MoveKind> = plan.polylines.iter().map(|line| line.kind).collect();
+        assert_eq!(kinds, MoveKind::ALL);
     }
 
     #[test]
@@ -617,14 +650,14 @@ mod tests {
         toolpath.append_line(
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(1.0, 0.0, 0.0),
-            SegmentKind::Feed,
+            MoveKind::Feed,
             0,
             0,
         );
         toolpath.append_line(
             Point3::new(10.0, 0.0, 0.0),
             Point3::new(11.0, 0.0, 0.0),
-            SegmentKind::Feed,
+            MoveKind::Feed,
             0,
             0,
         );
@@ -643,7 +676,7 @@ mod tests {
         toolpath.append_line(
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(1.0, 0.0, 0.0),
-            SegmentKind::Feed,
+            MoveKind::Feed,
             0,
             0,
         );
@@ -669,14 +702,14 @@ mod tests {
         toolpath.append_line(
             Point3::new(-20.0, -50.0, 0.0),
             Point3::new(-19.0, -40.0, 0.0),
-            SegmentKind::Feed,
+            MoveKind::Feed,
             0,
             0,
         );
         toolpath.append_line(
             Point3::new(20.0, 50.0, 0.0),
             Point3::new(21.0, 60.0, 0.0),
-            SegmentKind::Feed,
+            MoveKind::Feed,
             0,
             0,
         );
@@ -689,7 +722,7 @@ mod tests {
         let plan = RenderPlan::from_3d(&toolpath, &camera, RenderOptions::default());
         assert_eq!(plan.len(), 2);
         assert!(plan.polylines[0].depth > plan.polylines[1].depth);
-        assert_eq!(plan.polylines[0].kind, SegmentKind::Feed);
+        assert_eq!(plan.polylines[0].kind, MoveKind::Feed);
     }
 
     #[test]
@@ -706,7 +739,7 @@ mod tests {
         toolpath.append_line(
             behind,
             behind + Point3::new(5.0, 0.0, 0.0),
-            SegmentKind::Rapid,
+            MoveKind::Rapid,
             0,
             0,
         );
@@ -718,7 +751,7 @@ mod tests {
     fn three_d_preserves_style_and_metadata() {
         let mut toolpath = Toolpath::new();
         let point = Point3::new(0.0, 0.0, 0.0);
-        toolpath.append_line(point, point, SegmentKind::Probe, 4, 9);
+        toolpath.append_line(point, point, MoveKind::Probe, 4, 9);
         let mut camera = Camera3D::new(crate::viewport::Viewport::new(800.0, 600.0));
         camera.set_target(point);
         let plan = RenderPlan::from_3d(
@@ -730,7 +763,7 @@ mod tests {
             },
         );
         assert_eq!(plan.len(), 1);
-        assert_eq!(plan.polylines[0].kind, SegmentKind::Probe);
+        assert_eq!(plan.polylines[0].kind, MoveKind::Probe);
         assert_eq!(plan.polylines[0].layer, 4);
         assert_eq!(plan.polylines[0].tool, 9);
     }
@@ -741,7 +774,7 @@ mod tests {
         toolpath.append_line(
             Point3::new(-10.0, 0.0, 0.0),
             Point3::new(10.0, 0.0, 0.0),
-            SegmentKind::Feed,
+            MoveKind::Feed,
             0,
             0,
         );

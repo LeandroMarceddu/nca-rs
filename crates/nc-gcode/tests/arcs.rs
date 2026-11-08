@@ -1,7 +1,7 @@
 //! Arc geometry: planes, directions, I/J/K, R, full circles, and bounds.
 
 use nc_gcode::{ParseErrorKind, parse_program};
-use nc_viewer::SegmentKind;
+use nc_viewer::MoveKind;
 
 fn close(a: f32, b: f32) -> bool {
     (a - b).abs() <= 1.0e-3
@@ -35,7 +35,7 @@ fn xy_clockwise_arc_uses_the_top_half() {
     assert!(
         segments
             .iter()
-            .all(|segment| segment.kind == SegmentKind::Arc)
+            .all(|segment| segment.kind == MoveKind::ArcCw)
     );
     assert!(close(segments[0].start.x, 0.0) && close(segments[0].start.y, 0.0));
     assert!(close(segments[segments.len() - 1].end.x, 10.0));
@@ -115,7 +115,7 @@ fn helical_arc_splits_into_planar_slices_with_exact_bounds() {
     assert!(
         segments
             .iter()
-            .all(|segment| segment.kind == SegmentKind::Arc)
+            .all(|segment| segment.kind == MoveKind::HelixCw)
     );
     let last = segments.last().expect("last");
     assert!(close(last.end.x, 10.0) && close(last.end.z, -2.0));
@@ -227,7 +227,7 @@ fn semicircle_second_half_is_tessellated() {
         .toolpath
         .segments()
         .iter()
-        .filter(|segment| segment.kind == SegmentKind::Arc)
+        .filter(|segment| segment.kind == MoveKind::ArcCw)
         .collect();
 
     assert!(

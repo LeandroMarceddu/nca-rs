@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use nc_core::Position;
-use nc_viewer::{MoveKind, Point3, SegmentKind, Toolpath};
+use nc_viewer::{MoveKind, Point3, Toolpath};
 
 use crate::motion::{Annotation, MotionRecord};
 use crate::program::{Program, ProgramLine, ProgramStats};
@@ -98,7 +98,7 @@ impl ProgramBuilder {
                 motion.end_mm[1] as f32,
                 motion.end_mm[2] as f32,
             );
-            let kind = display_kind(motion.kind);
+            let kind = motion.kind;
             let tool = motion.tool;
             toolpath.append_line(start_point, end_point, kind, 0, display_tool(tool));
             let end = toolpath.len();
@@ -108,11 +108,15 @@ impl ProgramBuilder {
                 .or_insert((start, end));
             stats.path_length_mm += motion.path_length_mm();
             match kind {
-                SegmentKind::Rapid => stats.rapid_segments += 1,
-                SegmentKind::Feed => stats.feed_segments += 1,
-                SegmentKind::Plunge => stats.plunge_segments += 1,
-                SegmentKind::Arc => stats.arc_segments += 1,
-                SegmentKind::Probe => stats.probe_segments += 1,
+                MoveKind::Rapid | MoveKind::Retract => stats.rapid_segments += 1,
+                MoveKind::Feed | MoveKind::Ramp => stats.feed_segments += 1,
+                MoveKind::Plunge | MoveKind::Drill | MoveKind::Peck | MoveKind::Bore => {
+                    stats.plunge_segments += 1;
+                }
+                MoveKind::ArcCw | MoveKind::ArcCcw | MoveKind::HelixCw | MoveKind::HelixCcw => {
+                    stats.arc_segments += 1
+                }
+                MoveKind::Probe => stats.probe_segments += 1,
             }
             stats.observe_tool(tool);
             motions.push(motion);
@@ -162,20 +166,6 @@ impl ProgramBuilder {
 
 fn display_tool(tool: u32) -> u16 {
     u16::try_from(tool).unwrap_or(u16::MAX)
-}
-
-fn display_kind(kind: MoveKind) -> SegmentKind {
-    match kind {
-        MoveKind::Rapid | MoveKind::Retract => SegmentKind::Rapid,
-        MoveKind::Plunge => SegmentKind::Plunge,
-        MoveKind::ArcCw | MoveKind::ArcCcw | MoveKind::HelixCw | MoveKind::HelixCcw => {
-            SegmentKind::Arc
-        }
-        MoveKind::Probe => SegmentKind::Probe,
-        MoveKind::Feed | MoveKind::Ramp | MoveKind::Drill | MoveKind::Peck | MoveKind::Bore => {
-            SegmentKind::Feed
-        }
-    }
 }
 
 #[cfg(test)]

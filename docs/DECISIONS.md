@@ -22,6 +22,9 @@ consequence for the contract.
 
 ## D003 - Keep `SegmentKind` during the transition
 
+- **Status:** realized and closed on 2026-11-08. `SegmentKind` is removed;
+  `Segment`, `Toolpath`, `Polyline`, and `RenderPlan` carry `MoveKind`
+  end-to-end, and display/record kinds are produced by one classifier.
 - **Decision:** Add `MoveKind` and its styles to `nc-viewer` now; keep the
   existing display `SegmentKind` until the parser milestone replaces display
   emission.
@@ -30,6 +33,7 @@ consequence for the contract.
 - **Consequence:** Phase 1 parser work migrates display segments to `MoveKind`
   (or makes `SegmentKind` a display projection of it), and the app renders from
   the semantic taxonomy.
+
 
 ## D004 - `MotionRecord` is the source of truth; `Toolpath` stays for display
 

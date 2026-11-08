@@ -1,69 +1,19 @@
 //! The compact per-segment toolpath representation.
 
 use crate::geom::{Bounds3, Point3};
-
-/// The motion style of one toolpath segment.
-///
-/// `Probe` marks probing moves so the renderer can use a distinct style; it is
-/// not a cutting motion.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum SegmentKind {
-    /// Rapid (G0) travel.
-    #[default]
-    Rapid = 0,
-    /// Feed (G1) cutting move.
-    Feed = 1,
-    /// Vertical entry move into material.
-    Plunge = 2,
-    /// One chord of a tessellated arc.
-    Arc = 3,
-    /// Probing move.
-    Probe = 4,
-}
-
-impl SegmentKind {
-    /// Every kind, in display/legend order.
-    pub const ALL: [Self; 5] = [
-        Self::Rapid,
-        Self::Feed,
-        Self::Plunge,
-        Self::Arc,
-        Self::Probe,
-    ];
-
-    /// Returns `true` for moves that remove material.
-    #[must_use]
-    pub const fn is_cutting(self) -> bool {
-        matches!(self, Self::Feed | Self::Plunge | Self::Arc)
-    }
-
-    /// Returns `true` for rapid travel.
-    #[must_use]
-    pub const fn is_rapid(self) -> bool {
-        matches!(self, Self::Rapid)
-    }
-
-    /// A short ASCII label suitable for a legend or debug output.
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Rapid => "rapid",
-            Self::Feed => "feed",
-            Self::Plunge => "plunge",
-            Self::Arc => "arc",
-            Self::Probe => "probe",
-        }
-    }
-}
+use crate::move_kind::MoveKind;
 
 /// One straight motion segment in world space.
 ///
 /// The layout is deliberately compact: three `f32` coordinates per endpoint,
-/// then `u16` layer/tool ids and a `u8` kind. On common targets the struct is
-/// 32 bytes, so a million segments occupy about 32 MB. No segment owns heap
-/// data; the whole path is one flat [`Vec`] inside
+/// then `u16` layer/tool ids and the one-byte semantic [`MoveKind`]. On common
+/// targets the struct is 32 bytes, so a million segments occupy about 32 MB.
+/// No segment owns heap data; the whole path is one flat [`Vec`] inside
 /// [`Toolpath`](crate::Toolpath).
+///
+/// `kind` is the exact semantic kind assigned by the parser, never a coarse
+/// display projection: every chord of an arc keeps its arc or helix kind and a
+/// canned-cycle cutting move keeps Drill, Peck, or Bore.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Segment {
     /// Start point in millimetres.
@@ -74,14 +24,14 @@ pub struct Segment {
     pub layer: u16,
     /// Tool number that produced this segment.
     pub tool: u16,
-    /// Motion style.
-    pub kind: SegmentKind,
+    /// Semantic motion kind.
+    pub kind: MoveKind,
 }
 
 impl Segment {
     /// Creates a segment on layer 0 with tool 0.
     #[must_use]
-    pub const fn new(start: Point3, end: Point3, kind: SegmentKind) -> Self {
+    pub const fn new(start: Point3, end: Point3, kind: MoveKind) -> Self {
         Self {
             start,
             end,
@@ -147,7 +97,7 @@ mod tests {
             "Segment grew to {} bytes",
             std::mem::size_of::<Segment>()
         );
-        assert_eq!(std::mem::size_of::<SegmentKind>(), 1);
+        assert_eq!(std::mem::size_of::<MoveKind>(), 1);
     }
 
     #[test]
@@ -155,7 +105,7 @@ mod tests {
         let segment = Segment::new(
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(3.0, 4.0, 0.0),
-            SegmentKind::Feed,
+            MoveKind::Feed,
         )
         .with_layer(7)
         .with_tool(2);
@@ -172,17 +122,11 @@ mod tests {
     }
 
     #[test]
-    fn kind_properties() {
-        assert!(SegmentKind::Feed.is_cutting());
-        assert!(SegmentKind::Plunge.is_cutting());
-        assert!(SegmentKind::Arc.is_cutting());
-        assert!(!SegmentKind::Rapid.is_cutting());
-        assert!(!SegmentKind::Probe.is_cutting());
-        assert!(SegmentKind::Rapid.is_rapid());
-        assert_eq!(SegmentKind::default(), SegmentKind::Rapid);
-        assert_eq!(SegmentKind::ALL.len(), 5);
-        for kind in SegmentKind::ALL {
-            assert!(!kind.label().is_empty());
+    fn every_move_kind_fits_in_a_segment() {
+        for kind in MoveKind::ALL {
+            let segment = Segment::new(Point3::ZERO, Point3::new(1.0, 0.0, 0.0), kind);
+            assert_eq!(segment.kind, kind);
+            assert!(segment.is_valid());
         }
     }
 }

@@ -22,14 +22,14 @@
 //!
 //! ```
 //! use nc_viewer::{
-//!     Camera2D, Point3, RenderOptions, RenderPlan, SegmentKind, Toolpath, Viewport,
+//!     Camera2D, MoveKind, Point3, RenderOptions, RenderPlan, Toolpath, Viewport,
 //! };
 //!
 //! let mut path = Toolpath::new();
 //! path.append_line(
 //!     Point3::new(0.0, 0.0, 0.0),
 //!     Point3::new(40.0, 20.0, -1.0),
-//!     SegmentKind::Feed,
+//!     MoveKind::Feed,
 //!     0,
 //!     0,
 //! );
@@ -64,7 +64,7 @@ pub use camera3d::{Camera3D, ProjectedPoint, Projection};
 pub use geom::{Bounds2, Bounds3, Point2, Point3};
 pub use move_kind::{AnnotationKind, HoleMarker, MoveFamily, MoveKind, MoveStyle};
 pub use render::{Polyline, RenderOptions, RenderPlan};
-pub use segment::{Segment, SegmentKind};
+pub use segment::Segment;
 pub use stock::StockBox;
 pub use toolpath::{Toolpath, synthetic_toolpath};
 pub use viewport::Viewport;

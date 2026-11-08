@@ -7,7 +7,7 @@
 use std::fmt;
 
 /// The semantic kind of one motion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(u8)]
 pub enum MoveKind {
     /// G0 travel.
@@ -406,6 +406,13 @@ mod tests {
             assert!(!family.label().is_empty());
         }
         assert_eq!(covered, MoveKind::ALL.len());
+    }
+
+    #[test]
+    fn discriminants_match_legend_order() {
+        for (index, kind) in MoveKind::ALL.into_iter().enumerate() {
+            assert_eq!(kind as usize, index, "{kind:?}");
+        }
     }
 
     #[test]

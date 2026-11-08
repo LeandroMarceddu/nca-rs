@@ -5,7 +5,7 @@ use nc_gcode::{
     CoolantMode, ParseErrorKind, Parser, ParserConfig, SpindleMode, ToolLength, WarningKind,
     parse_program, parse_program_with,
 };
-use nc_viewer::SegmentKind;
+use nc_viewer::MoveKind;
 
 fn offsets_with(wcs: Wcs, x: f64, y: f64, z: f64) -> [Position; 9] {
     let mut offsets = [Position::zero(); 9];
@@ -23,9 +23,9 @@ fn simple_line_rapid_plunge_path() {
     let segments = program.toolpath.segments();
 
     assert_eq!(segments.len(), 3);
-    assert_eq!(segments[0].kind, SegmentKind::Rapid);
-    assert_eq!(segments[1].kind, SegmentKind::Plunge);
-    assert_eq!(segments[2].kind, SegmentKind::Feed);
+    assert_eq!(segments[0].kind, MoveKind::Retract);
+    assert_eq!(segments[1].kind, MoveKind::Plunge);
+    assert_eq!(segments[2].kind, MoveKind::Feed);
 
     assert_eq!(segments[0].start, nc_viewer::Point3::ZERO);
     assert_eq!(segments[0].end, nc_viewer::Point3::new(0.0, 0.0, 5.0));
@@ -275,7 +275,7 @@ fn probing_moves_are_marked_and_not_cutting() {
     let program = parse_program("G0 Z0\nG38.2 Z-5 F50\n").expect("valid");
     let segments = program.toolpath.segments();
     assert_eq!(segments.len(), 1);
-    assert_eq!(segments[0].kind, SegmentKind::Probe);
+    assert_eq!(segments[0].kind, MoveKind::Probe);
     assert_eq!(program.stats.probe_segments, 1);
     assert_eq!(program.stats.cutting_length_mm, 0.0);
     assert!((program.stats.path_length_mm - 5.0).abs() < 1.0e-6);
@@ -288,7 +288,7 @@ fn a_modal_word_after_a_probe_move_is_not_a_probe() {
     let program = parse_program("G0 Z0\nG38.2 Z-5 F50\nG91\nG0 Z2\nG90\n").expect("valid");
     let segments = program.toolpath.segments();
     assert_eq!(segments.len(), 2);
-    assert_eq!(segments[1].kind, SegmentKind::Rapid);
+    assert_eq!(segments[1].kind, MoveKind::Retract);
     assert!((segments[1].end.z - segments[1].start.z - 2.0).abs() < 1.0e-6);
 
     // A probe code without an axis is still rejected.
