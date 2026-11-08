@@ -121,7 +121,8 @@ consequence for the contract.
 
 ## D015 - Config parsing is strict
 
-- **Decision:** Unknown TOML keys and unknown enum values are errors.
+- **Decision:** Unknown TOML keys, unknown `[rules."<id>"]` rule ids, and unknown
+  enum values are errors.
 - **Reason:** A typo that silently disables a rule is worse than a failed run.
 
 ## D016 - Phase 0 simulator is a scaffold
@@ -348,3 +349,5 @@ consequence for the contract.
 - **Reason:** These were the independent v0.1 review blockers/should-fix items.
 - **Consequence:** Unsupported files are viewable and analyzed, arc overtravel
   is caught, coverage arithmetic is honest, and a typo cannot disable a rule.
+  `RULESET_VERSION` stays `1.0.0` because v0.1 has not shipped a report
+  format; the travel-rule behavior is reflected in the regenerated goldens.

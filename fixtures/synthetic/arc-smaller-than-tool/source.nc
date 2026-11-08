@@ -1,4 +1,4 @@
-(internal arc radius 1.5 mm with a 6 mm cutter)
+(internal arc radius 2.0 mm with a 6 mm cutter)
 G21 G90 G54 G17
 T1 M6
 G0 Z5

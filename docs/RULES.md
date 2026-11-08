@@ -191,6 +191,7 @@ Common evidence keys, typed as `EvidenceValue`:
 | `start_mm`, `end_mm` | Point3 | motion rules |
 | `axis` | Text (`X`/`Y`/`Z`) | `travel.machine_envelope`, `travel.z_below_table` |
 | `value_mm`, `min_mm`, `max_mm` | Float | `travel.machine_envelope`, `travel.z_below_table` |
+| `extent_min_mm`, `extent_max_mm` | Float (envelope/table) or Point3 (stock bounds) | exact swept extent including arcs |
 | `kind` | Text (`MoveKind::label`) | motion rules |
 | `depth_mm` | Float | depth and clearance rules |
 | `first_line`, `second_line` | Int | `geometry.duplicate_hole`, `geometry.overlapping_holes` |

@@ -5,10 +5,13 @@ project knowledge store is lost.
 
 ## Current
 
-- Phase: **0 - scaffold, docs, frozen interfaces**
-- Status: Phase 0 work complete; gate verification in progress.
-- Next: review the Phase 0 gate, then spawn the parser, stock/sim, and app-shell
-  milestones in parallel.
+- Phase: **v0.1 complete**
+- Status: independent v0.1 review verdict **ship**; all three blockers fixed,
+  no new blockers, 747 workspace tests passing.
+- Next (post-v0.1): mid-run analysis/seek progress and cancellation (D034),
+  asynchronous SIMULATE session build (D035), dedicated fixtures listed in
+  D033, camera/stock-mesh frame-time measurements, `cargo deny`/doc CI. Tag
+  only if the user asks.
 
 ## Phase 0 checklist
 

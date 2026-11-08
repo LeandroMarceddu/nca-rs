@@ -48,15 +48,16 @@ unit tests and by the committed fixtures.
 | `overlapping-holes` | centres closer than the tool diameter |
 | `rapid-through-stock` | rapid below safe Z and XY rapid inside stock |
 | `arc-smaller-than-tool` | internal arc below tool radius |
+| `cutter-comp` | G41 recorded but centerline geometry continues |
 | `arc-radius-mismatch` | start/end radius disagreement |
 | `tool-change` | T/M6 pairing and tool inventory |
 | `unsupported-code` | lossy parse, geometry stops, coverage remains honest |
 | `inferred-stock` | inference basis and stock_source evidence |
 | `explicit-stock` | explicit-stock rules now run |
-| `manual-spindle` | spindle rules skipped with `spindle_manual`, and evaluated without |
-| `inch-program` | G20 units and tool comment units |
+| `manual-spindle` | spindle rules skipped with `spindle_manual` (evaluated-without variant pending) |
+| `inch-program` | G20 conversion; tool values come from config, not a comment hint |
 | `helical-bore` | exact helix length and timeline |
-| `drill-cycles` | G73/G81/G82/G83/G85/G86/G89 expansion |
+| `drill-cycles` | canned-cycle records; the committed file covers G81/G83/G85, other cycles are unit-tested |
 | `thin-wall` | explicit stock and wall detection threshold |
 | `rest-material` | explicit stock and standing material |
 

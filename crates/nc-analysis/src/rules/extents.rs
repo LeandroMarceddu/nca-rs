@@ -18,6 +18,7 @@ use nc_stock::arc_bounds;
 /// be ordered against a travel or stock box, so a rule must not report it. A
 /// malformed arc extremum that is non-finite is ignored per axis and leaves the
 /// endpoint extent in place.
+#[must_use]
 pub(crate) fn motion_extents(motion: &MotionRecord) -> Option<([f64; 3], [f64; 3])> {
     let mut min = [0.0; 3];
     let mut max = [0.0; 3];

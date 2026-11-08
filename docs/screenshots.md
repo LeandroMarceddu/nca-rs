@@ -14,6 +14,9 @@ must compile and pass non-visual tests.
 | SIMULATE, assumed tool | 1280x800 | `TOOL SIZE ASSUMED` visible |
 | Diagnostics | 1280x800 | one warning selected, evidence visible |
 | Coverage | 1280x800 | evaluated/skipped counts and reasons |
+| Setup sheet | 1280x800 | tools/stock provenance and editable fields |
+| Export sheet | 1280x800 | JSON selected, path field, write action |
+| Partial geometry | 1280x800 | unsupported block, parse.unsupported selected |
 | Compact | 1024x600 | two columns |
 | Portrait | 1080x1920 | single scrolling column |
 
