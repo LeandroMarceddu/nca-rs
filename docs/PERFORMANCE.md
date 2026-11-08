@@ -37,11 +37,45 @@ Recorded before any measurement, as required:
    report the 95th percentile, not only the average.
 6. Record the exact command and the fixture name next to every number.
 
-## Status
+## Measurements
 
-No numbers are recorded yet. Phase 0 only established the crate graph and the
-scaffold. Measurements are taken after the parser and simulator milestones land,
-and every deviation from the initial targets is recorded in `DECISIONS.md`.
+### 2026-11-08 - real `box54` file
+
+Input: `fixtures/real/box54-lid-50cm/source.nc`, 119,433 lines, 2,415,803 bytes,
+119,393 motion records. Command:
+
+```sh
+./target/release/nca check fixtures/real/box54-lid-50cm/source.nc   --config fixtures/real/box54-lid-50cm/config.toml --format json
+```
+
+| Run | Wall time | Exit |
+|---|---:|---:|
+| 1 | 0.522 s | 0 |
+| 2 | 0.501 s | 0 |
+| 3 | 0.509 s | 0 |
+
+Median **0.509 s**, peak RSS **105,516 KB (~103 MiB)**. This includes parsing,
+motion records, the 45-rule analysis and JSON serialization. Debug build:
+**1.80 s** for the same workload.
+
+Report: 477 retained diagnostics, `31/45` rules evaluated, per-rule caps active
+(`truncated` records dropped findings for `clearance.rapid_at_depth`,
+`geometry.arc_smaller_than_tool`, `process.radial_engagement` and
+`process.plunge_feed`). No absolute path appears in the JSON.
+
+### Against the initial targets
+
+| Metric | Target | Measured | Verdict |
+|---|---|---|---|
+| Parse + records + timeline, 100k lines | <= 1 s | 0.51 s release, including analysis | pass |
+| Peak memory, 119k motions | <= ~250 B/motion | ~103 MiB total process | pass |
+| M1 analysis, 1M lines | <= 10 s | not measured (1M fixture pending) | pending |
+| MotionRecord size | <= 128 bytes | enforced by test | pass |
+| Camera 60 fps, 1M segments | 60 fps | not measured | pending |
+| Stock mesh update | 15-30 Hz | not measured | pending |
+
+A 1M-line synthetic fixture and release UI frame-time measurements are still
+required before the performance section is final.
 
 ## Degradation policy
 

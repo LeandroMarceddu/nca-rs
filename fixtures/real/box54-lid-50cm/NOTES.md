@@ -30,9 +30,14 @@ The primary real-world regression and performance fixture:
 - zero-config behavior: inferred stock, comment-derived tool sizes, and a
   coverage list that names every skipped rule.
 
-`expected.json` is added only after the rule engine can produce a report and the
-orchestrator has reviewed it line by line against this file. It is not
-auto-blessed.
+`expected.json` is intentionally absent for now. The report is large and
+model-heavy (hundreds of clearance and engagement findings), so this fixture is
+used as a determinism, cap and performance regression instead. A golden is added
+only after the model rules are tuned and the report is reviewed line by line;
+it is never auto-blessed.
+
+Measured 2026-11-08: release `nca check` median 0.509 s, ~103 MiB RSS; debug
+1.80 s. See `docs/PERFORMANCE.md`.
 
 ## Permission
 

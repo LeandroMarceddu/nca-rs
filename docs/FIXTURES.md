@@ -64,6 +64,11 @@ Ask the user for, at minimum:
 Real files are stored under `fixtures/real/<name>/` with the same four files.
 The user is not blocked on providing them; synthetic coverage starts the suite.
 
+`box54-lid-50cm` currently has no `expected.json`. Its report is large and
+model-heavy (hundreds of clearance/engagement findings), so it is used as a
+determinism, cap and performance regression (`crates/nc-fixtures/tests/real_file.rs`)
+until the model rules are tuned and the report is reviewed for a golden.
+
 ## Comparison
 
 `nc-fixtures` loads a folder, parses `config.toml`, runs analysis, and compares
